@@ -1,0 +1,5 @@
+# SWE-bench cloud stack (Modal agent sandbox + sb-cli evaluation).
+# Install separately from the main RL requirements to avoid version conflicts.
+mini-swe-agent[modal]>=2.3.0
+swe-rex>=1.4.0
+sb-cli>=0.1.0

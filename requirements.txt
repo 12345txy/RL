@@ -1,0 +1,13 @@
+transformers>=5.10.0,<6.0.0
+trl>=1.5.0
+datasets
+accelerate
+peft
+safetensors
+huggingface-hub
+evaluate
+lm_eval[hf,vllm]==0.4.12
+vllm>=0.8.0
+ray
+tqdm
+swanlab

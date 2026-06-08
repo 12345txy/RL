@@ -1,0 +1,25 @@
+# SWE-bench Modal sandbox + local Gemma4-12B via vLLM.
+environment:
+  environment_class: swerex_modal
+  cwd: "/testbed"
+  timeout: 60
+  interpreter: ["bash", "-c"]
+  env:
+    PAGER: cat
+    MANPAGER: cat
+    LESS: -R
+    PIP_PROGRESS_BAR: "off"
+    TQDM_DISABLE: "1"
+  startup_timeout: 600.0
+  runtime_timeout: 1800.0
+  deployment_timeout: 1800.0
+  install_pipx: true
+  modal_sandbox_kwargs: {}
+
+model:
+  model_name: "hosted_vllm/gemma-4-12B-it"
+  cost_tracking: "ignore_errors"
+  model_kwargs:
+    api_base: "http://127.0.0.1:8000/v1"
+    drop_params: true
+    temperature: 0.0

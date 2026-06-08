@@ -1,0 +1,9 @@
+# Local model weights (see scripts/download_*.sh)
+models/
+
+# SwanLab experiment logs
+swanlog/
+
+# Local results
+results/
+outputs/

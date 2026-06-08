@@ -1,0 +1,6 @@
+# SWE-bench on a local VM with Docker (no Modal).
+# Agent sandbox + harness evaluation run in Docker on the VM;
+# vLLM can stay on a separate GPU machine.
+mini-swe-agent>=2.3.0
+swebench>=4.0.0
+datasets>=2.14.0
