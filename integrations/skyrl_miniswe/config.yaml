@@ -1,0 +1,46 @@
+# Sky-RL mini-swe-agent training config (8x H100)
+# Use with: bash scripts/run_rl_skyrl.sh
+# Full Sky-RL install: pip install git+https://github.com/NovaSky-AI/SkyRL.git
+
+trainer:
+  algorithm: grpo
+  train_batch_size: 32
+  policy_mini_batch_size: 16
+  micro_train_batch_size_per_gpu: 1
+  micro_forward_batch_size_per_gpu: 1
+  epochs: 1
+  update_epochs_per_batch: 1
+  kl_loss_coef: 0.005
+  learning_rate: 5.0e-7
+  max_grad_norm: 0.5
+  max_turns: 50
+  num_rollouts_per_prompt: 8
+  total_steps_rl1: 500
+  total_steps_rl2: 2000
+
+placement:
+  policy_num_gpus: 6
+  ref_num_gpus: 6
+  rollout_num_gpus: 2
+
+generator:
+  inference_engine:
+    backend: vllm
+    num_engines: 2
+    tensor_parallel_size: 1
+    gpu_memory_utilization: 0.85
+    api_base: http://127.0.0.1:8000/v1
+
+data:
+  rl_pool_lite: data/rl/swegym_rl_train_lite.jsonl
+  rl_pool_full: data/rl/swegym_rl_train.jsonl
+  dev_split: data/splits/verified_dev_100.json
+
+model:
+  base_path: models/gemma-4-12B-it
+  sft_checkpoint: outputs/sft-gemma4-12b-miniswe-full
+  output_dir: outputs/rl-gemma4-12b-miniswe
+
+reward:
+  type: binary_resolve
+  step_penalty: 0.01

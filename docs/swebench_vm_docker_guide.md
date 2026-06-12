@@ -128,33 +128,76 @@ CONDA_ENV=myenv bash scripts/setup_swebench_vm.sh
 
 VM 上的 agent 通过 `VLLM_BASE` 调用 GPU 上的 vLLM（LiteLLM `hosted_vllm/*`）。
 
-### 方式 A：SSH 隧道（推荐）
-
-在 **虚拟机** 上执行（保持终端不关）：
-
-```bash
-ssh -N -L 8000:127.0.0.1:8000 GPU_USER@GPU_HOST
-```
-
-另开终端验证：
+Workshop 上 vLLM 默认监听 **`0.0.0.0:8000`**。在 Workshop 内确认：
 
 ```bash
 curl -s http://127.0.0.1:8000/v1/models | head
+hostname -I   # 记下内网 IP，例如 172.19.x.x
 ```
 
-之后统一使用：
+VM 与 Workshop 往往 **不在同一二层网络**，SSH `-L`/`-R` 隧道可能不通（已实测失败时跳过方式 A）。
+
+### 方式 A：VKS Server Export（平台推荐）
+
+在 VKS 控制台对 GPU 实例：
+
+1. 进入 **Run Shell**（或任意终端）启动 vLLM：`bash scripts/serve_gemma4_12b.sh`
+2. 开启 **Server Export**，导出端口 **8000**
+3. 复制平台给出的 **外网/内网访问地址**
+
+在 VM 上验证（把 URL 换成平台给的）：
 
 ```bash
-export VLLM_BASE=http://127.0.0.1:8000/v1
+curl -s http://<export-地址>/v1/models | head
+export VLLM_BASE=http://<export-地址>/v1
 ```
 
-### 方式 B：GPU 公网 IP
+**不必依赖 Run Shell UI 才能起 vLLM**——Cursor/SSH 终端里启动即可；Export 只是在平台侧登记端口转发。若平台提供 **CLI/API** 做 Export，与 UI 等价，向 VKS 管理员索取命令（常见为 `kubectl port-forward` 或平台自有 `vks` 子命令）。
 
-在 GPU 机器防火墙/安全组中，仅对 **VM 的 IP** 放行 TCP `8000`，然后：
+### 方式 B：内网 IP 直连（同一 VPC 时最快）
+
+若 VM 能路由到 Workshop 内网 IP，在 **VM** 上：
 
 ```bash
-export VLLM_BASE=http://GPU_PUBLIC_IP:8000/v1
+curl -s http://172.19.37.205:8000/v1/models | head   # IP 换成 hostname -I 的结果
+export VLLM_BASE=http://172.19.37.205:8000/v1
 ```
+
+不通则说明两机网络隔离，改用方式 A 或 C。
+
+### 方式 C：cloudflared 临时公网隧道（纯 CLI，不依赖 VKS Export）
+
+在 **GPU Workshop** 安装并启动（与 Run Shell 无关，SSH 终端即可）：
+
+```bash
+# 一次性下载或使用已安装的 cloudflared
+cloudflared tunnel --url http://127.0.0.1:8000
+```
+
+终端会打印类似 `https://xxxx.trycloudflare.com` 的 URL。在 VM 上：
+
+```bash
+curl -s https://xxxx.trycloudflare.com/v1/models | head
+export VLLM_BASE=https://xxxx.trycloudflare.com/v1
+```
+
+注意：临时 URL 每次重启会变；仅适合调试，生产环境优先用方式 A。
+
+### 方式 D：SSH 隧道（仅当 VM↔Workshop SSH 互通且 sshd 允许转发时）
+
+Workshop → VM 反向：
+
+```bash
+ssh -N -R 8000:127.0.0.1:8000 user@VM_IP
+```
+
+VM → Workshop 正向：
+
+```bash
+ssh -N -L 8000:127.0.0.1:8000 user@WORKSHOP
+```
+
+VM 上 `curl http://127.0.0.1:8000/v1/models`。**若已证实不通，不要用此方式。**
 
 ---
 
@@ -240,9 +283,10 @@ groups | grep docker
 
 ### VM：`vLLM not reachable`
 
-1. GPU 机器上 vLLM 是否在跑  
-2. SSH 隧道是否断开  
-3. `curl $VLLM_BASE/models` 在 VM 上是否通  
+1. GPU 机器上 vLLM 是否在跑：`curl http://127.0.0.1:8000/v1/models`  
+2. `VLLM_BASE` 是否指向 **Server Export / 内网 IP / cloudflared** 的有效地址（不要假设 SSH 隧道可用）  
+3. 在 VM 上：`curl -v "$VLLM_BASE/models"` 看是连接超时还是 HTTP 4xx/5xx  
+4. Export 地址是否含 `/v1` 后缀（应为 `.../v1`，不是只到 host）  
 
 ### Agent：`ContextWindowExceededError`
 
@@ -286,8 +330,9 @@ cd ~/working/RL
 bash scripts/serve_gemma4_12b.sh
 curl -s http://127.0.0.1:8000/v1/models | head
 
-# ── CPU 虚拟机：隧道 ──
-ssh -N -L 8000:127.0.0.1:8000 GPU_USER@GPU_HOST
+# ── CPU 虚拟机：验证 vLLM（任选一种已打通的方式）──
+curl -s http://<export-或-内网-或-cloudflared>/v1/models | head
+export VLLM_BASE=http://<同上>/v1
 
 # ── CPU 虚拟机：环境与跑题 ──
 cd ~/RL

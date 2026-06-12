@@ -7,3 +7,7 @@ swanlog/
 # Local results
 results/
 outputs/
+
+# Generated datasets (see scripts/run_prepare_data.sh)
+data/**
+!data/*.py
