@@ -1,5 +1,5 @@
 # SWE-bench with local Docker sandbox + remote/local vLLM (OpenAI-compatible API).
-# Set VLLM_BASE before running, e.g. http://127.0.0.1:8000/v1 (SSH tunnel) or http://GPU_IP:8000/v1
+# Set VLLM_BASE before running, e.g. https://...alayanew.com:22443/v1
 environment:
   environment_class: docker
   cwd: "/testbed"
@@ -14,13 +14,13 @@ environment:
   container_timeout: "4h"
 
 agent:
-  step_limit: 200
+  step_limit: 250
 
 model:
-  model_name: "hosted_vllm/gemma-4-12B-it"
+  model_name: "hosted_vllm/Qwen3.6-27B"
   cost_tracking: "ignore_errors"
   model_kwargs:
-    api_base: "http://127.0.0.1:8000/v1"
+    api_base: "https://sv-1de238dd-3e5f-4057-96ff-e7820166f5d1-8000-x-defau-c9b4bcae2d.sproxy.bj-14.alayanew.com:22443/v1"
     drop_params: true
-    temperature: 0.0
+    temperature: 0.2
     timeout: 600

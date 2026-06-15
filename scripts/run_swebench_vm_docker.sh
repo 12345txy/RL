@@ -6,12 +6,13 @@ cd "$ROOT"
 
 SUBSET="${SUBSET:-verified}"
 SPLIT="${SPLIT:-test}"
-SLICE="${SLICE:-0:5}"
-WORKERS="${WORKERS:-2}"
-REDO_EXISTING="${REDO_EXISTING:-0}"
-OUTPUT_DIR="${OUTPUT_DIR:-results/swebench_vm_docker}"
-MODEL="${MODEL:-hosted_vllm/gemma-4-12B-it}"
-VLLM_BASE="${VLLM_BASE:-http://127.0.0.1:8000/v1}"
+SLICE="${SLICE:-10:30}"
+WORKERS="${WORKERS:-4}"
+REDO_EXISTING="${REDO_EXISTING:-1}"
+MODEL="${MODEL:-hosted_vllm/Qwen3.6-27B}"
+MODEL_SLUG="${MODEL##*/}"
+OUTPUT_DIR="${OUTPUT_DIR:-results/swebench_vm_docker/${MODEL_SLUG}-${SLICE}}"
+VLLM_BASE="${VLLM_BASE:-https://sv-1de238dd-3e5f-4057-96ff-e7820166f5d1-8000-x-defau-c9b4bcae2d.sproxy.bj-14.alayanew.com:22443/v1}"
 CONFIG="${CONFIG:-configs/swebench_docker_gemma4_12b.yaml}"
 CONDA_ENV="${CONDA_ENV:-swebench}"
 
@@ -27,14 +28,15 @@ Env:
   SPLIT=test
   SLICE=0:100              instance slice
   WORKERS=2                parallel instances (CPU/RAM bound)
-  OUTPUT_DIR=...
-  VLLM_BASE=http://127.0.0.1:8000/v1
-  MODEL=hosted_vllm/gemma-4-12B-it
+  OUTPUT_DIR=results/swebench_vm_docker/<model>  (default, derived from MODEL)
+  VLLM_BASE=https://sv-1de238dd-3e5f-4057-96ff-e7820166f5d1-8000-x-defau-c9b4bcae2d.sproxy.bj-14.alayanew.com:22443/v1
+  MODEL=hosted_vllm/Qwen3.6-27B
   REDO_EXISTING=1          overwrite existing trajectories
+  MSWEA_MODEL_RETRY_STOP_AFTER_ATTEMPT=3   LLM retries on timeout (default 3)
   CONDA_ENV=swebench
 
 Example:
-  VLLM_BASE=http://127.0.0.1:8000/v1 SLICE=0:100 WORKERS=2 \
+  VLLM_BASE=https://sv-1de238dd-3e5f-4057-96ff-e7820166f5d1-8000-x-defau-c9b4bcae2d.sproxy.bj-14.alayanew.com:22443/v1 SLICE=0:100 WORKERS=2 \
     bash scripts/run_swebench_vm_docker.sh
 EOF
 }
@@ -70,12 +72,14 @@ if ! curl -sf "${VLLM_BASE%/}/models" >/dev/null 2>&1; then
 fi
 
 export MSWEA_COST_TRACKING="${MSWEA_COST_TRACKING:-ignore_errors}"
+export MSWEA_MODEL_RETRY_STOP_AFTER_ATTEMPT="${MSWEA_MODEL_RETRY_STOP_AFTER_ATTEMPT:-3}"
 
 mkdir -p "$OUTPUT_DIR"
 
 echo "==> SWE-bench (VM Docker + vLLM)"
 echo "    subset=$SUBSET split=$SPLIT slice=$SLICE workers=$WORKERS"
 echo "    model=$MODEL vllm=$VLLM_BASE output=$OUTPUT_DIR"
+echo "    llm_retry_attempts=$MSWEA_MODEL_RETRY_STOP_AFTER_ATTEMPT"
 
 REDO_ARG=()
 if [[ "$REDO_EXISTING" == "1" ]]; then

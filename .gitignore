@@ -8,6 +8,9 @@ swanlog/
 results/
 outputs/
 
+# SWE-bench harness logs
+logs/
+
 # Generated datasets (see scripts/run_prepare_data.sh)
 data/**
 !data/*.py
