@@ -57,7 +57,14 @@ if ! docker ps >/dev/null 2>&1; then
   exit 1
 fi
 
-echo "==> Joining Ray cluster at $RAY_ADDRESS (cpus=$NUM_CPUS, resource=$DOCKER_RAY_RESOURCE=1)"
+DOCKER_BIN="$(command -v docker)"
+export DOCKER_EXECUTABLE="$DOCKER_BIN"
+export MSWEA_DOCKER_EXECUTABLE="$DOCKER_BIN"
+export PATH="$(dirname "$DOCKER_BIN"):${PATH}"
+# Ray worker subprocesses inherit the raylet env; pin docker for Mini-SWE-Agent.
+export SKYRL_DOCKER_EXECUTABLE="$DOCKER_BIN"
+
+echo "==> Joining Ray cluster at $RAY_ADDRESS (cpus=$NUM_CPUS, resource=$DOCKER_RAY_RESOURCE=1, docker=$DOCKER_BIN)"
 ray start --address="$RAY_ADDRESS" \
   --num-cpus="$NUM_CPUS" \
   --num-gpus=0 \

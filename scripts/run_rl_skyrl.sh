@@ -18,6 +18,17 @@ POLICY_GPUS="${POLICY_GPUS:-6}"
 ROLLOUT_GPUS="${ROLLOUT_GPUS:-2}"
 NUM_ENGINES="${NUM_ENGINES:-2}"
 TP_SIZE="${TP_SIZE:-1}"
+# vLLM "ray" executor spawns EngineCore workers that call ray.init() again; with
+# RAY_TUNNEL_MODE the GCS bootstrap address (container NIC) is unreachable and
+# servers never pass /health. Use "mp" for TP=1 (local GPU workers, no nested Ray).
+DISTRIBUTED_EXECUTOR_BACKEND="${DISTRIBUTED_EXECUTOR_BACKEND:-}"
+if [[ -z "$DISTRIBUTED_EXECUTOR_BACKEND" ]]; then
+  if [[ "$TP_SIZE" -le 1 ]]; then
+    DISTRIBUTED_EXECUTOR_BACKEND=mp
+  else
+    DISTRIBUTED_EXECUTOR_BACKEND=ray
+  fi
+fi
 HTTP_HOST="${SKYRL_HTTP_HOST:-127.0.0.1}"
 HTTP_PORT="${SKYRL_HTTP_PORT:-8001}"
 SFT_ADAPTER_PATH="${SFT_ADAPTER_PATH:-}"
@@ -27,6 +38,9 @@ EPOCHS="${EPOCHS:-}"
 LOGGER="${LOGGER:-swanlab}"
 PROJECT_NAME="${SWANLAB_PROJECT:-swe-rl}"
 RUN_NAME="${SWANLAB_EXPERIMENT_NAME:-}"
+RAY_TUNNEL_MODE="${RAY_TUNNEL_MODE:-1}"
+RAY_TUNNEL_IP="${RAY_TUNNEL_IP:-127.0.0.1}"
+SKYRL_REQUIRE_DOCKER_NODE="${SKYRL_REQUIRE_DOCKER_NODE:-1}"
 
 source "/root/miniconda3/etc/profile.d/conda.sh"
 conda activate "$CONDA_ENV"
@@ -34,6 +48,12 @@ export RAY_RUNTIME_ENV_HOOK="${RAY_RUNTIME_ENV_HOOK:-ray._private.runtime_env.uv
 export PYTHONPATH="$ROOT:${PYTHONPATH:-}"
 export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
 export NCCL_CUMEM_ENABLE="${NCCL_CUMEM_ENABLE:-0}"
+export SKYRL_REQUIRE_DOCKER_NODE
+if [[ "$RAY_TUNNEL_MODE" == "1" ]]; then
+  export RAY_PRESERVE_LOCALHOST_IP=1
+  export RAY_ADDRESS="${RAY_ADDRESS:-$RAY_TUNNEL_IP:6379}"
+  python "$ROOT/scripts/patch_ray_tunnel.py"
+fi
 
 usage() {
   cat <<'EOF'
@@ -60,6 +80,7 @@ Env:
   SFT_ADAPTER_PATH=outputs/.../checkpoint-150   # optional; auto from SFT_CHECKPOINT if LoRA
   LORA_RANK=0|64
   POLICY_GPUS=6  ROLLOUT_GPUS=2  NUM_ENGINES=2
+  DISTRIBUTED_EXECUTOR_BACKEND=mp  # required for RAY_TUNNEL_MODE + TP=1
   SKYRL_HTTP_HOST=127.0.0.1   # GPU head IP for CPU Ray workers
   SKYRL_REQUIRE_DOCKER_NODE=1 # schedule rollouts on CPU workers
   OUTPUT_DIR=outputs/rl-gemma4-12b-miniswe
@@ -145,7 +166,7 @@ echo "==> SkyRL GRPO stage=$STAGE policy=$POLICY_MODEL_PATH train=$TRAIN_PARQUET
 if [[ -n "${SFT_ADAPTER_PATH:-}" ]]; then
   echo "    SFT adapter init: $SFT_ADAPTER_PATH"
 fi
-echo "    placement: ${POLICY_GPUS} policy + ${NUM_ENGINES} vLLM engines (TP=$TP_SIZE)"
+echo "    placement: ${POLICY_GPUS} policy + ${NUM_ENGINES} vLLM engines (TP=$TP_SIZE, executor=$DISTRIBUTED_EXECUTOR_BACKEND)"
 echo "    weight sync: NCCL (trainer -> vLLM after each update)"
 echo "    Docker rollouts: SKYRL_REQUIRE_DOCKER_NODE=${SKYRL_REQUIRE_DOCKER_NODE:-0}"
 
@@ -172,6 +193,8 @@ python -m integrations.skyrl_miniswe.main \
   trainer.dump_data_batch=true \
   trainer.ckpt_interval=5 \
   trainer.max_prompt_length=4096 \
+  trainer.flash_attn=false \
+  trainer.remove_microbatch_padding=false \
   generator.sampling_params.max_generate_length=4096 \
   generator.max_input_length=28672 \
   generator.max_turns=20 \
@@ -182,6 +205,7 @@ python -m integrations.skyrl_miniswe.main \
   generator.inference_engine.run_engines_locally=true \
   generator.inference_engine.num_engines="$NUM_ENGINES" \
   generator.inference_engine.tensor_parallel_size="$TP_SIZE" \
+  generator.inference_engine.distributed_executor_backend="$DISTRIBUTED_EXECUTOR_BACKEND" \
   generator.inference_engine.enable_http_endpoint=true \
   "generator.inference_engine.http_endpoint_host=$HTTP_HOST" \
   generator.inference_engine.http_endpoint_port="$HTTP_PORT" \

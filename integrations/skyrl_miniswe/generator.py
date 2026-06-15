@@ -3,115 +3,25 @@
 from __future__ import annotations
 
 import asyncio
-import os
-import traceback
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
-import ray
 import yaml
-from loguru import logger
-from minisweagent.agents.default import DefaultAgent
 from minisweagent.config import get_config_path
-from minisweagent.models import get_model
-from integrations.skyrl_miniswe.mini_swe_utils import evaluate_trajectory, get_sb_environment, save_traj
+from integrations.skyrl_miniswe.rollout_worker import schedule_init_and_run
 from skyrl.backends.skyrl_train.inference_engines.base import ConversationType
 from skyrl.backends.skyrl_train.inference_engines.inference_engine_client import InferenceEngineClient
 from skyrl.backends.skyrl_train.inference_engines.utils import get_sampling_params_for_backend
 from skyrl.train.config import GeneratorConfig, SkyRLGymConfig
-from skyrl.train.generators.base import BatchMetadata, GeneratorInput, GeneratorOutput, TrajectoryID, TrainingPhase
+from skyrl.train.generators.base import BatchMetadata, GeneratorInput, GeneratorOutput, TrajectoryID
 from skyrl.train.generators.skyrl_gym_generator import SkyRLGymGenerator
 from skyrl.train.generators.utils import get_response_ids_and_loss_mask_from_messages, get_rollout_metrics
-
-DOCKER_RAY_RESOURCE = os.environ.get("SKYRL_DOCKER_RAY_RESOURCE", "docker_node")
 
 
 @dataclass
 class MiniSWEGeneratorConfig(GeneratorConfig):
     miniswe_config_path: str = ""
     miniswe_traj_dir: str = ""
-
-
-class DefaultAgentWithReminder(DefaultAgent):
-    def get_observation(self, response: dict) -> dict:
-        output = self.execute_action(self.parse_action(response))
-        observation = self.render_template(self.config.action_observation_template, output=output)
-        remaining = self.config.step_limit - self.model.n_calls
-        if remaining == 1:
-            observation = (
-                f"{observation}\nREMINDER: You only have 1 turn left. Please provide the final answer"
-            )
-        elif remaining > 1:
-            observation = f"{observation}\nREMINDER: You have {remaining} turns left to arrive at the solution."
-        self.add_message("user", observation)
-        return output
-
-
-def _docker_remote_options() -> dict[str, Any]:
-    """Schedule Docker rollouts on CPU Ray workers tagged with docker_node."""
-    if os.environ.get("SKYRL_REQUIRE_DOCKER_NODE", "0") == "1":
-        return {"num_cpus": 0.01, "resources": {DOCKER_RAY_RESOURCE: 0.01}}
-    return {"num_cpus": 0.01}
-
-
-@ray.remote(**_docker_remote_options())
-def init_and_run(
-    instance: dict,
-    litellm_model_name: str,
-    sweagent_config: dict,
-    generator_cfg: GeneratorConfig,
-    data_source: str,
-    sampling_params: dict,
-    trajectory_id: TrajectoryID,
-    global_step: int,
-    training_phase: TrainingPhase,
-):
-    model_config = sweagent_config.get("model", {})
-    model_config.setdefault("model_kwargs", {}).update(sampling_params)
-    model = get_model(litellm_model_name, model_config)
-
-    agent = None
-    extra_info = None
-    result = None
-    reward = 0
-    error = None
-    try:
-        env = get_sb_environment(sweagent_config, instance, data_source)
-        agent = DefaultAgentWithReminder(model, env, **sweagent_config.get("agent", {}))
-        exit_status, result = agent.run(instance["problem_statement"])
-    except Exception as e:
-        logger.error(f"Error processing instance {instance['instance_id']}: {e}", exc_info=True)
-        exit_status, result = type(e).__name__, str(e)
-        error = str(e)
-        extra_info = {"traceback": traceback.format_exc()}
-    finally:
-        traj_root = Path(generator_cfg.miniswe_traj_dir) / f"step_{global_step}" / training_phase
-        traj_root.mkdir(parents=True, exist_ok=True)
-        filename = f"{instance['instance_id']}_{trajectory_id.repetition_id}.json"
-        path = traj_root / filename
-        if agent is not None:
-            eval_error = None
-            try:
-                result = evaluate_trajectory(instance, result, sweagent_config, data_source)
-                reward = int(result["resolved"])
-                eval_error = result["eval_error"]
-                if eval_error:
-                    error = eval_error
-            except Exception as e:
-                eval_error = str(e)
-                error = str(e)
-            save_traj(
-                agent,
-                path,
-                exit_status=exit_status,
-                result=result,
-                extra_info=extra_info,
-                reward=reward,
-                eval_error=eval_error,
-            )
-
-    return (agent.messages if agent is not None else [], reward, error)
 
 
 class MiniSweAgentGenerator(SkyRLGymGenerator):
@@ -146,11 +56,11 @@ class MiniSweAgentGenerator(SkyRLGymGenerator):
     ):
         del prompt
         sweagent_config = yaml.safe_load(get_config_path(self.generator_cfg.miniswe_config_path).read_text())
-        messages, reward, error = await init_and_run.remote(
+        messages, reward, error = await schedule_init_and_run(
             env_extras["instance"],
             self.litellm_model_name,
             sweagent_config,
-            self.generator_cfg,
+            self.generator_cfg.miniswe_traj_dir,
             env_extras["data_source"],
             sampling_params,
             trajectory_id,
