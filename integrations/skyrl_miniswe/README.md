@@ -22,7 +22,7 @@ After each GRPO step, SkyRL pushes updated weights to vLLM — **no manual resta
 ```bash
 # GPU machine
 bash scripts/setup_skyrl.sh
-conda activate skyrl
+conda activate RL
 
 # CPU machine (Docker VM)
 bash scripts/setup_skyrl.sh   # or: pip install ray mini-swe-agent
@@ -32,11 +32,12 @@ bash scripts/setup_swebench_vm.sh
 ## Run
 
 ```bash
-# 1. GPU: Ray head
+# 1. GPU: Ray head (tunnel mode keeps GCS at 127.0.0.1 for SSH-forwarded workers)
 bash scripts/run_skyrl_ray_head.sh
 
-# 2. CPU: join cluster
-RAY_ADDRESS=<GPU_IP>:6379 bash scripts/run_skyrl_ray_worker.sh
+# 2. CPU: join cluster (swebench env; patches Ray client; SSH tunnels must stay open)
+CONDA_ENV=swebench RAY_ADDRESS=127.0.0.1:6379 bash scripts/run_skyrl_ray_worker.sh
+# Or manually on CPU after: python scripts/patch_ray_tunnel.py && export RAY_PRESERVE_LOCALHOST_IP=1
 
 # 3. GPU: GRPO training (rl1 = lite pool, rl2 = full pool)
 SFT_CHECKPOINT=outputs/sft-gemma4-12b-miniswe-full \
