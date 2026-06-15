@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Multi-turn Agent RL with rollout collection + weighted SFT updates (GRPO-style)."""
+"""DEPRECATED: Legacy pseudo-RL (mock env + SFT refresh). Use SkyRL: bash scripts/run_rl_skyrl.sh"""
 
 from __future__ import annotations
 

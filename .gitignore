@@ -1,3 +1,8 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
 # Local model weights (see scripts/download_*.sh)
 models/
 

@@ -172,7 +172,28 @@ def parse_args() -> argparse.Namespace:
         default=True,
         help="Trade compute for memory; disable only if you have headroom (default: true)",
     )
+    parser.add_argument(
+        "--resume_from_checkpoint",
+        nargs="?",
+        const="latest",
+        default=None,
+        metavar="CHECKPOINT",
+        help="Resume training: omit value for latest checkpoint in output_dir, or pass a checkpoint path",
+    )
     return parser.parse_args()
+
+
+def _resolve_resume_checkpoint(value: str | None, output_dir: str) -> bool | str | None:
+    if value is None:
+        return None
+    if value.lower() in ("true", "1", "yes", "latest"):
+        return True
+    path = Path(value)
+    if not path.is_absolute():
+        path = Path(output_dir) / path
+    if not path.is_dir():
+        raise SystemExit(f"Resume checkpoint not found: {path}")
+    return str(path)
 
 
 def main() -> None:
@@ -271,7 +292,11 @@ def main() -> None:
         peft_config=peft_config,
         callbacks=callbacks,
     )
-    trainer.train()
+    resume = _resolve_resume_checkpoint(args.resume_from_checkpoint, args.output_dir)
+    if _is_rank0() and resume is not None:
+        label = "latest in output_dir" if resume is True else resume
+        print(f"==> Resuming from checkpoint: {label}")
+    trainer.train(resume_from_checkpoint=resume)
     trainer.save_model(args.output_dir)
     tokenizer.save_pretrained(args.output_dir)
     print(f"==> Saved checkpoint to {args.output_dir}")

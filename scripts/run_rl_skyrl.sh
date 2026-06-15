@@ -6,35 +6,63 @@ cd "$ROOT"
 
 CONDA_ENV="${CONDA_ENV:-RL}"
 STAGE="${STAGE:-rl1}"
-MODEL="${MODEL:-gemma-4-12B-it}"
-VLLM_BASE="${VLLM_BASE:-http://127.0.0.1:8000/v1}"
+POLICY_MODEL_PATH="${POLICY_MODEL_PATH:-models/gemma-4-12B-it}"
 SFT_CHECKPOINT="${SFT_CHECKPOINT:-outputs/sft-gemma4-12b-miniswe-full}"
 OUTPUT_DIR="${OUTPUT_DIR:-outputs/rl-gemma4-12b-miniswe}"
-SKIP_SFT_CONTINUE="${SKIP_SFT_CONTINUE:-0}"
+CKPT_PATH="${CKPT_PATH:-$OUTPUT_DIR/checkpoints}"
+TRAJ_DIR="${TRAJ_DIR:-$OUTPUT_DIR/trajectories}"
+PARQUET_DIR="${PARQUET_DIR:-data/rl/skyrl_parquet}"
+MINISWE_CONFIG="${MINISWE_CONFIG:-integrations/skyrl_miniswe/swebench.yaml}"
+
+POLICY_GPUS="${POLICY_GPUS:-6}"
+ROLLOUT_GPUS="${ROLLOUT_GPUS:-2}"
+NUM_ENGINES="${NUM_ENGINES:-2}"
+TP_SIZE="${TP_SIZE:-1}"
+HTTP_HOST="${SKYRL_HTTP_HOST:-127.0.0.1}"
+HTTP_PORT="${SKYRL_HTTP_PORT:-8001}"
+SFT_ADAPTER_PATH="${SFT_ADAPTER_PATH:-}"
+LORA_RANK="${LORA_RANK:-0}"
+LORA_ALPHA="${LORA_ALPHA:-128}"
+EPOCHS="${EPOCHS:-}"
+LOGGER="${LOGGER:-swanlab}"
+PROJECT_NAME="${SWANLAB_PROJECT:-swe-rl}"
+RUN_NAME="${SWANLAB_EXPERIMENT_NAME:-}"
 
 source "/root/miniconda3/etc/profile.d/conda.sh"
 conda activate "$CONDA_ENV"
+export RAY_RUNTIME_ENV_HOOK="${RAY_RUNTIME_ENV_HOOK:-ray._private.runtime_env.uv_runtime_env_hook.hook}"
+export PYTHONPATH="$ROOT:${PYTHONPATH:-}"
+export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
+export NCCL_CUMEM_ENABLE="${NCCL_CUMEM_ENABLE:-0}"
 
 usage() {
   cat <<'EOF'
 Usage: bash scripts/run_rl_skyrl.sh
 
-Phase 3: Multi-turn Agent RL (rollout collection + policy refresh).
+True SkyRL GRPO training with:
+  - FSDP policy update on 6 GPUs
+  - vLLM rollout engines on 2 GPUs (NCCL weight sync after each step)
+  - Mini-SWE-Agent Docker rollouts on CPU Ray workers
 
 Stages:
-  rl1  SWE-Gym Lite / small pool, 500 steps (default)
-  rl2  Full RL pool, 2000 steps
+  rl1  SWE-Gym-Lite parquet, 5 epochs (default)
+  rl2  Full SWE-Gym parquet, 20 epochs
+
+Prerequisites:
+  bash scripts/setup_skyrl.sh
+  bash scripts/run_skyrl_ray_head.sh        # GPU machine
+  bash scripts/run_skyrl_ray_worker.sh      # CPU machine (Docker)
 
 Env:
   STAGE=rl1|rl2
-  VLLM_BASE=http://127.0.0.1:8000/v1
+  POLICY_MODEL_PATH=models/gemma-4-12B-it
   SFT_CHECKPOINT=outputs/sft-gemma4-12b-miniswe-full
+  SFT_ADAPTER_PATH=outputs/.../checkpoint-150   # optional; auto from SFT_CHECKPOINT if LoRA
+  LORA_RANK=0|64
+  POLICY_GPUS=6  ROLLOUT_GPUS=2  NUM_ENGINES=2
+  SKYRL_HTTP_HOST=127.0.0.1   # GPU head IP for CPU Ray workers
+  SKYRL_REQUIRE_DOCKER_NODE=1 # schedule rollouts on CPU workers
   OUTPUT_DIR=outputs/rl-gemma4-12b-miniswe
-  SKIP_SFT_CONTINUE=1
-
-Prerequisites:
-  vLLM serving SFT checkpoint (see serve_gemma4_12b.sh LORA_PATH/CHECKPOINT)
-  data/rl/swegym_rl_train.jsonl from run_prepare_data.sh
 EOF
 }
 
@@ -43,42 +71,131 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   exit 0
 fi
 
-if ! curl -sf "${VLLM_BASE%/}/models" >/dev/null 2>&1; then
-  echo "ERROR: vLLM not reachable at $VLLM_BASE" >&2
-  echo "Start: CHECKPOINT=$SFT_CHECKPOINT bash scripts/serve_gemma4_12b.sh" >&2
+if ! python -c "import skyrl" 2>/dev/null; then
+  echo "ERROR: skyrl not installed. Run: bash scripts/setup_skyrl.sh" >&2
   exit 1
 fi
 
-RL_POOL="data/rl/swegym_rl_train.jsonl"
-STEPS=500
-if [[ "$STAGE" == "rl2" ]]; then
-  STEPS=2000
-elif [[ "$STAGE" == "rl1" ]]; then
-  python data/prepare_swe_gym_sft.py --lite_only --rl_output data/rl/swegym_rl_train_lite.jsonl || true
-  if [[ -f data/rl/swegym_rl_train_lite.jsonl ]]; then
-    RL_POOL="data/rl/swegym_rl_train_lite.jsonl"
+LORA_RANK="${LORA_RANK:-0}"
+
+if [[ -d "$SFT_CHECKPOINT" && -f "$SFT_CHECKPOINT/config.json" ]]; then
+  POLICY_MODEL_PATH="$SFT_CHECKPOINT"
+elif [[ -d "$SFT_CHECKPOINT" && -f "$SFT_CHECKPOINT/adapter_config.json" ]]; then
+  SFT_ADAPTER_PATH="${SFT_ADAPTER_PATH:-$SFT_CHECKPOINT}"
+  if [[ "$LORA_RANK" -le 0 ]]; then
+    LORA_RANK="$(python - <<'PY' "$SFT_ADAPTER_PATH"
+import json, sys
+cfg = json.load(open(f"{sys.argv[1]}/adapter_config.json"))
+print(cfg.get("r", 64))
+PY
+)"
+  fi
+  echo "==> Loading SFT LoRA adapter: $SFT_ADAPTER_PATH (rank=$LORA_RANK) on base $POLICY_MODEL_PATH"
+fi
+
+if [[ -n "$SFT_ADAPTER_PATH" ]]; then
+  if [[ ! -f "$SFT_ADAPTER_PATH/adapter_config.json" ]]; then
+    echo "ERROR: SFT_ADAPTER_PATH missing adapter_config.json: $SFT_ADAPTER_PATH" >&2
+    exit 1
+  fi
+  if [[ "$LORA_RANK" -le 0 ]]; then
+    echo "ERROR: set LORA_RANK>0 when using SFT_ADAPTER_PATH" >&2
+    exit 1
   fi
 fi
 
+TRAIN_PARQUET="$PARQUET_DIR/train.parquet"
+LITE_FLAG=()
+EPOCHS_DEFAULT=20
+if [[ "$STAGE" == "rl1" ]]; then
+  TRAIN_PARQUET="$PARQUET_DIR/train_lite.parquet"
+  LITE_FLAG=(--lite_only)
+  EPOCHS_DEFAULT=5
+fi
+EPOCHS="${EPOCHS:-$EPOCHS_DEFAULT}"
+
+if [[ ! -f "$TRAIN_PARQUET" ]]; then
+  echo "==> Building SkyRL parquet: $TRAIN_PARQUET"
+  python integrations/skyrl_miniswe/preprocess_swegym.py \
+    --output_dir "$PARQUET_DIR" \
+    "${LITE_FLAG[@]}"
+fi
+
 OUT="${OUTPUT_DIR}-${STAGE}"
-echo "==> Agent RL stage=$STAGE pool=$RL_POOL steps=$STEPS"
-python scripts/train_agent_rl.py \
-  --rl_pool "$RL_POOL" \
-  --output_dir "$OUT" \
-  --api_base "$VLLM_BASE" \
-  --model "$MODEL" \
-  --steps "$STEPS" \
-  --batch_size 8 \
-  --num_rollouts 4 \
-  --max_turns 50 \
-  --save_every 50
+CKPT_PATH="${OUT}/checkpoints"
+TRAJ_DIR="${OUT}/trajectories"
+mkdir -p "$CKPT_PATH" "$TRAJ_DIR"
 
-if [[ "$SKIP_SFT_CONTINUE" == "1" ]]; then
-  exit 0
+if [[ -z "$RUN_NAME" ]]; then
+  RUN_NAME="skyrl-gemma4-12b-${STAGE}"
 fi
 
-POS="${OUT}/rl_positive_trajectories.jsonl"
-if [[ -f "$POS" && -s "$POS" ]]; then
-  echo "==> Policy refresh SFT on RL-positive trajectories"
-  TRAIN_PATH="$POS" STAGE=lora OUTPUT_DIR="${OUT}-refresh" bash scripts/run_sft.sh
+EXTRA_ARGS=()
+if [[ "$LORA_RANK" -gt 0 ]]; then
+  EXTRA_ARGS+=(
+    "trainer.policy.model.lora.rank=$LORA_RANK"
+    "trainer.policy.model.lora.alpha=$LORA_ALPHA"
+  )
+  if [[ -n "$SFT_ADAPTER_PATH" ]]; then
+    EXTRA_ARGS+=("trainer.policy.model.lora.adapter_path=$SFT_ADAPTER_PATH")
+  fi
 fi
+
+echo "==> SkyRL GRPO stage=$STAGE policy=$POLICY_MODEL_PATH train=$TRAIN_PARQUET"
+if [[ -n "${SFT_ADAPTER_PATH:-}" ]]; then
+  echo "    SFT adapter init: $SFT_ADAPTER_PATH"
+fi
+echo "    placement: ${POLICY_GPUS} policy + ${NUM_ENGINES} vLLM engines (TP=$TP_SIZE)"
+echo "    weight sync: NCCL (trainer -> vLLM after each update)"
+echo "    Docker rollouts: SKYRL_REQUIRE_DOCKER_NODE=${SKYRL_REQUIRE_DOCKER_NODE:-0}"
+
+python -m integrations.skyrl_miniswe.main \
+  "data.train_data=['$TRAIN_PARQUET']" \
+  "data.val_data=['$PARQUET_DIR/validation.parquet']" \
+  trainer.algorithm.advantage_estimator=grpo \
+  "trainer.policy.model.path=$POLICY_MODEL_PATH" \
+  trainer.placement.colocate_all=false \
+  trainer.strategy=fsdp \
+  trainer.placement.policy_num_gpus_per_node="$POLICY_GPUS" \
+  trainer.placement.ref_num_gpus_per_node="$POLICY_GPUS" \
+  trainer.placement.policy_num_nodes=1 \
+  trainer.placement.ref_num_nodes=1 \
+  trainer.epochs="$EPOCHS" \
+  trainer.eval_batch_size=16 \
+  trainer.eval_before_train=false \
+  trainer.eval_interval=5 \
+  trainer.update_epochs_per_batch=1 \
+  trainer.train_batch_size=8 \
+  trainer.policy_mini_batch_size=8 \
+  trainer.micro_forward_batch_size_per_gpu=1 \
+  trainer.micro_train_batch_size_per_gpu=1 \
+  trainer.dump_data_batch=true \
+  trainer.ckpt_interval=5 \
+  trainer.max_prompt_length=4096 \
+  generator.sampling_params.max_generate_length=4096 \
+  generator.max_input_length=28672 \
+  generator.max_turns=20 \
+  trainer.policy.optimizer_config.lr=5.0e-7 \
+  trainer.algorithm.use_kl_loss=true \
+  trainer.algorithm.kl_loss_coef=0.005 \
+  generator.inference_engine.backend=vllm \
+  generator.inference_engine.run_engines_locally=true \
+  generator.inference_engine.num_engines="$NUM_ENGINES" \
+  generator.inference_engine.tensor_parallel_size="$TP_SIZE" \
+  generator.inference_engine.enable_http_endpoint=true \
+  "generator.inference_engine.http_endpoint_host=$HTTP_HOST" \
+  generator.inference_engine.http_endpoint_port="$HTTP_PORT" \
+  generator.inference_engine.weight_sync_backend=nccl \
+  generator.inference_engine.async_engine=true \
+  generator.batched=true \
+  generator.n_samples_per_prompt=4 \
+  generator.inference_engine.gpu_memory_utilization=0.85 \
+  "trainer.logger=$LOGGER" \
+  "trainer.project_name=$PROJECT_NAME" \
+  "trainer.run_name=$RUN_NAME" \
+  trainer.resume_mode=null \
+  "trainer.ckpt_path=$CKPT_PATH" \
+  "generator.miniswe_config_path=$MINISWE_CONFIG" \
+  "generator.miniswe_traj_dir=$TRAJ_DIR" \
+  "${EXTRA_ARGS[@]}" \
+  "$@"

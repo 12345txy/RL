@@ -19,6 +19,7 @@ LOSS_TYPE="${LOSS_TYPE:-chunked_nll}"
 LOGGING_STEPS="${LOGGING_STEPS:-1}"
 SAVE_STEPS="${SAVE_STEPS:-50}"
 DDP_TIMEOUT="${DDP_TIMEOUT:-1200}"
+RESUME_FROM_CHECKPOINT="${RESUME_FROM_CHECKPOINT:-}"
 
 MODEL_PATH="${MODEL_PATH:-models/gemma-4-12B-it}"
 TRAIN_PATH="${TRAIN_PATH:-data/sft/sft_merged.jsonl}"
@@ -75,6 +76,8 @@ Env:
   LOGGING_STEPS=1
   SAVE_STEPS=50
   DDP_TIMEOUT=1200
+  RESUME_FROM_CHECKPOINT=1          Latest checkpoint in output dir
+  RESUME_FROM_CHECKPOINT=checkpoint-100   Specific checkpoint under output dir
 EOF
 }
 
@@ -144,7 +147,6 @@ PY
 )"
 fi
 
-echo "==> SFT stage=$STAGE output=$OUT max_seq_length=$MAX_SEQ_LENGTH deepspeed_zero=$DEEPSPEED_ZERO_STAGE grad_ckpt=$GRADIENT_CHECKPOINTING save_steps=$SAVE_STEPS logging_steps=$LOGGING_STEPS ddp_timeout=${DDP_TIMEOUT}s preprocess_cache=$PREPROCESS_CACHE_DIR use_preprocessed=$USE_PREPROCESSED swanlab=$([[ "$NO_SWANLAB" == "1" ]] && echo off || echo on) project=$SWANLAB_PROJECT run=$SWANLAB_EXPERIMENT_NAME"
 PREPROCESS_ARGS=()
 if [[ "$USE_PREPROCESSED" == "1" ]]; then
   PREPROCESS_ARGS+=(--use_preprocessed)
@@ -158,6 +160,32 @@ GRAD_CKPT_ARGS=(--gradient_checkpointing)
 if [[ "$GRADIENT_CHECKPOINTING" != "1" ]]; then
   GRAD_CKPT_ARGS=(--no-gradient_checkpointing)
 fi
+
+RESUME_ARGS=()
+RESUME_LABEL=off
+if [[ -n "$RESUME_FROM_CHECKPOINT" && "$RESUME_FROM_CHECKPOINT" != "0" ]]; then
+  if [[ "$RESUME_FROM_CHECKPOINT" == "1" || "$RESUME_FROM_CHECKPOINT" == "true" ]]; then
+    if ! compgen -G "$OUT/checkpoint-*" > /dev/null; then
+      echo "ERROR: RESUME_FROM_CHECKPOINT=1 but no checkpoint-* found under $OUT" >&2
+      exit 1
+    fi
+    RESUME_ARGS=(--resume_from_checkpoint)
+    RESUME_LABEL=latest
+  else
+    CKPT_PATH="$RESUME_FROM_CHECKPOINT"
+    if [[ "$CKPT_PATH" != /* ]]; then
+      CKPT_PATH="$OUT/$CKPT_PATH"
+    fi
+    if [[ ! -d "$CKPT_PATH" ]]; then
+      echo "ERROR: resume checkpoint not found: $CKPT_PATH" >&2
+      exit 1
+    fi
+    RESUME_ARGS=(--resume_from_checkpoint "$RESUME_FROM_CHECKPOINT")
+    RESUME_LABEL="$RESUME_FROM_CHECKPOINT"
+  fi
+fi
+
+echo "==> SFT stage=$STAGE output=$OUT max_seq_length=$MAX_SEQ_LENGTH deepspeed_zero=$DEEPSPEED_ZERO_STAGE grad_ckpt=$GRADIENT_CHECKPOINTING save_steps=$SAVE_STEPS logging_steps=$LOGGING_STEPS ddp_timeout=${DDP_TIMEOUT}s resume=$RESUME_LABEL preprocess_cache=$PREPROCESS_CACHE_DIR use_preprocessed=$USE_PREPROCESSED swanlab=$([[ "$NO_SWANLAB" == "1" ]] && echo off || echo on) project=$SWANLAB_PROJECT run=$SWANLAB_EXPERIMENT_NAME"
 
 accelerate launch --config_file "$ACCEL_CONFIG" scripts/train_sft.py \
   --model_path "$MODEL_PATH" \
@@ -175,5 +203,6 @@ accelerate launch --config_file "$ACCEL_CONFIG" scripts/train_sft.py \
   --save_steps "$SAVE_STEPS" \
   --deepspeed_zero_stage "$DEEPSPEED_ZERO_STAGE" \
   --ddp_timeout "$DDP_TIMEOUT" \
+  "${RESUME_ARGS[@]}" \
   "${SWANLAB_ARGS[@]}" \
   "${EXTRA_ARGS[@]}"

@@ -1,39 +1,53 @@
-# Sky-RL mini-swe-agent training config (8x H100)
-# Use with: bash scripts/run_rl_skyrl.sh
-# Full Sky-RL install: pip install git+https://github.com/NovaSky-AI/SkyRL.git
+# SkyRL GRPO reference (8×H100 disaggregated)
+# Launch via: bash scripts/run_rl_skyrl.sh
+# Install:    bash scripts/setup_skyrl.sh
 
 trainer:
   algorithm: grpo
-  train_batch_size: 32
-  policy_mini_batch_size: 16
+  strategy: fsdp
+  train_batch_size: 8
+  policy_mini_batch_size: 8
   micro_train_batch_size_per_gpu: 1
   micro_forward_batch_size_per_gpu: 1
-  epochs: 1
+  epochs: 5          # rl1; use 20 for rl2
   update_epochs_per_batch: 1
-  kl_loss_coef: 0.005
-  learning_rate: 5.0e-7
-  max_grad_norm: 0.5
-  max_turns: 50
-  num_rollouts_per_prompt: 8
-  total_steps_rl1: 500
-  total_steps_rl2: 2000
+  algorithm:
+    use_kl_loss: true
+    kl_loss_coef: 0.005
+  policy:
+    optimizer_config:
+      lr: 5.0e-7
 
 placement:
-  policy_num_gpus: 6
-  ref_num_gpus: 6
+  colocate_all: false
+  policy_num_gpus_per_node: 6
+  ref_num_gpus_per_node: 6
   rollout_num_gpus: 2
 
 generator:
+  n_samples_per_prompt: 4
+  batched: true
+  max_turns: 20
+  max_input_length: 28672
+  sampling_params:
+    max_generate_length: 4096
   inference_engine:
     backend: vllm
+    run_engines_locally: true
     num_engines: 2
     tensor_parallel_size: 1
     gpu_memory_utilization: 0.85
-    api_base: http://127.0.0.1:8000/v1
+    weight_sync_backend: nccl
+    async_engine: true
+    enable_http_endpoint: true
+    http_endpoint_host: 127.0.0.1
+    http_endpoint_port: 8001
+  miniswe_config_path: integrations/skyrl_miniswe/swebench.yaml
 
 data:
-  rl_pool_lite: data/rl/swegym_rl_train_lite.jsonl
-  rl_pool_full: data/rl/swegym_rl_train.jsonl
+  rl_pool_lite: data/rl/skyrl_parquet/train_lite.parquet
+  rl_pool_full: data/rl/skyrl_parquet/train.parquet
+  val_split: data/rl/skyrl_parquet/validation.parquet
   dev_split: data/splits/verified_dev_100.json
 
 model:
@@ -42,5 +56,8 @@ model:
   output_dir: outputs/rl-gemma4-12b-miniswe
 
 reward:
-  type: binary_resolve
+  type: binary_resolve_docker
   step_penalty: 0.01
+
+# CPU VM: Ray worker with docker_node resource runs Docker rollouts.
+# GPU machine: policy FSDP + vLLM engines; NCCL syncs weights after each GRPO step.

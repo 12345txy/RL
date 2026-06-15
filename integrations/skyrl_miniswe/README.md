@@ -1,32 +1,98 @@
-# Sky-RL + mini-swe-agent integration
+# SkyRL + mini-swe-agent (true GRPO RL)
 
-Rollout generator and reward helpers for multi-turn SWE Agent RL with vLLM.
+Real online RL with **vLLM weight sync** (NCCL) and **Docker rollouts on CPU Ray workers**.
 
-## Usage
+## Architecture
 
-```bash
-pip install git+https://github.com/NovaSky-AI/SkyRL.git
+```
+GPU machine (8×H100)
+├── 6 GPU: FSDP policy + ref (GRPO update)
+├── 2 GPU: vLLM rollout engines (SkyRL-managed, weight sync via NCCL)
+└── Ray head
+
+CPU machine (Docker)
+└── Ray worker (docker_node=1) → Mini-SWE-Agent Docker sandboxes
+         └── HTTP → GPU vLLM :8001 (SkyRL internal endpoint)
 ```
 
-Then map `integrations/skyrl_miniswe/config.yaml` into your Sky-RL launch script.
+After each GRPO step, SkyRL pushes updated weights to vLLM — **no manual restart**.
 
-## Components
+## Setup
+
+```bash
+# GPU machine
+bash scripts/setup_skyrl.sh
+conda activate skyrl
+
+# CPU machine (Docker VM)
+bash scripts/setup_skyrl.sh   # or: pip install ray mini-swe-agent
+bash scripts/setup_swebench_vm.sh
+```
+
+## Run
+
+```bash
+# 1. GPU: Ray head
+bash scripts/run_skyrl_ray_head.sh
+
+# 2. CPU: join cluster
+RAY_ADDRESS=<GPU_IP>:6379 bash scripts/run_skyrl_ray_worker.sh
+
+# 3. GPU: GRPO training (rl1 = lite pool, rl2 = full pool)
+SFT_CHECKPOINT=outputs/sft-gemma4-12b-miniswe-full \
+  SKYRL_HTTP_HOST=<GPU_IP> \
+  SKYRL_REQUIRE_DOCKER_NODE=1 \
+  STAGE=rl1 \
+  bash scripts/run_rl_skyrl.sh
+```
+
+## Files
 
 | File | Role |
 |------|------|
-| `generator.py` | Multi-turn mini-swe-agent rollout via vLLM `/chat/completions` |
-| `reward.py` | Binary resolve reward for SWE-Gym RL |
-| `config.yaml` | Reference Sky-RL trainer config |
+| `main.py` | SkyRL `BasePPOExp` entrypoint |
+| `generator.py` | `MiniSweAgentGenerator` (real Docker + harness reward) |
+| `mini_swe_utils.py` | Docker env + patch evaluation |
+| `swebench.yaml` | Mini-SWE-Agent prompt + Docker config |
+| `preprocess_swegym.py` | SWE-Gym → parquet for SkyRL |
+| `config.yaml` | Reference hyperparameters |
 
-## Serve checkpoint
+## Patched SkyRL in shared ``RL`` env
+
+Uses existing **vLLM nightly + torch 2.11** (no downgrade). Install:
 
 ```bash
-CHECKPOINT=outputs/sft-gemma4-12b-miniswe-full bash scripts/serve_gemma4_12b.sh
+bash scripts/setup_skyrl.sh   # conda activate RL
 ```
 
-## SWE-bench eval
+Patches: `vendor/SkyRL/` — SFT adapter init, relaxed deps, Python 3.10+.
+
+从 SFT adapter 继续 RL（例如 `checkpoint-150`）：
 
 ```bash
-VLLM_BASE=http://127.0.0.1:8000/v1 SLICE=0:100 WORKERS=2 \
-  bash scripts/run_swebench_vm_docker.sh
+SFT_CHECKPOINT=outputs/sft-gemma4-12b-miniswe-lora/checkpoint-150 \
+  POLICY_MODEL_PATH=models/gemma-4-12B-it \
+  STAGE=rl1 \
+  bash scripts/run_rl_skyrl.sh
 ```
+
+等价于设置：
+
+```bash
+trainer.policy.model.path=models/gemma-4-12B-it
+trainer.policy.model.lora.rank=64
+trainer.policy.model.lora.adapter_path=outputs/.../checkpoint-150
+```
+
+SkyRL patch 位置：`vendor/SkyRL/`（`adapter_path` 加载 + ref 同步同一 adapter）。
+
+## Legacy
+
+The old pseudo-RL loop (`scripts/train_agent_rl.py` + manual vLLM restart) is deprecated.
+Use `bash scripts/run_rl_legacy.sh` only for debugging.
+
+## Notes
+
+- SkyRL uses its **own** vLLM engines — do **not** run `serve_gemma4_12b.sh` during training.
+- For SWE-bench **eval** after RL, export checkpoint and serve separately on GPU.
+- Gemma4 may need vLLM version alignment; prefer **full SFT checkpoint** as `SFT_CHECKPOINT`.

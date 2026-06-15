@@ -1,0 +1,26 @@
+# SkyRL GRPO deps for the shared ``RL`` conda env (reuses existing vLLM nightly + torch).
+# Install: bash scripts/setup_skyrl.sh
+-r requirements.txt
+
+loguru
+tensordict
+jaxtyping
+func_timeout
+hydra-core==1.3.2
+omegaconf
+torchdata
+tensorboard
+polars
+s3fs
+fastapi
+uvicorn
+pybind11
+vllm-router
+nixl-cu12
+# Optional: only needed for linear-attention models (e.g. Qwen3.5), not Gemma4 text SWE-RL
+# flash-linear-attention
+# causal-conv1d
+mini-swe-agent>=2.3.0
+litellm
+ray[default]>=2.51.1
+peft>=0.18.1
