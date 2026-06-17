@@ -12,7 +12,7 @@ from minisweagent.agents.default import DefaultAgent
 from minisweagent.models import get_model
 
 from integrations.skyrl_miniswe.mini_swe_utils import evaluate_trajectory, get_sb_environment, save_traj
-from skyrl.train.generators.base import TrajectoryID, TrainingPhase
+from integrations.skyrl_miniswe.types import TrajectoryID, TrainingPhase
 
 
 class DefaultAgentWithReminder(DefaultAgent):

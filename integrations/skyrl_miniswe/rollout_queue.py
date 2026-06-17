@@ -276,7 +276,7 @@ def _trajectory_id_to_dict(trajectory_id) -> dict[str, Any]:
 
 
 def _trajectory_id_from_dict(data: dict[str, Any]):
-    from skyrl.train.generators.base import TrajectoryID
+    from integrations.skyrl_miniswe.types import TrajectoryID
 
     return TrajectoryID(
         instance_id=data["instance_id"],

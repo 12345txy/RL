@@ -22,5 +22,5 @@ nixl-cu12
 # causal-conv1d
 mini-swe-agent>=2.3.0
 litellm
-ray[default]>=2.51.1
+ray==2.55.1
 peft>=0.18.1
