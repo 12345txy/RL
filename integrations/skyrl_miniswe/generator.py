@@ -136,7 +136,9 @@ class MiniSweAgentGenerator(SkyRLGymGenerator):
         prompt_token_ids = [output[4] for output in all_outputs if output[0] is not None]
         if not responses:
             raise ValueError(
-                "No valid trajectories in this batch. Check Docker on CPU Ray workers and vLLM HTTP endpoint."
+                "No valid trajectories in this batch. Check CPU pull workers "
+                "(bash scripts/run_rollout_pull_worker.sh), rollout queue port 9000 SSH tunnel, "
+                "and vLLM HTTP endpoint."
             )
 
         rollout_metrics = get_rollout_metrics(responses, rewards)

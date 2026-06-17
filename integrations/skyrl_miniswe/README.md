@@ -11,8 +11,9 @@ GPU machine (8×H100)
 └── Ray head
 
 CPU machine (Docker)
-└── Ray worker (docker_node=1) → Mini-SWE-Agent Docker sandboxes
-         └── HTTP → GPU vLLM :8001 (SkyRL internal endpoint)
+└── Pull rollout workers → Mini-SWE-Agent Docker sandboxes
+         ├── HTTP pull  GPU rollout queue :9000
+         └── HTTP call  GPU vLLM :8001 (SkyRL internal endpoint)
 ```
 
 After each GRPO step, SkyRL pushes updated weights to vLLM — **no manual restart**.
@@ -32,19 +33,18 @@ bash scripts/setup_swebench_vm.sh
 ## Run
 
 ```bash
-# 1. GPU: Ray head (tunnel mode keeps GCS at 127.0.0.1 for SSH-forwarded workers)
+# 1. GPU: Ray head
 bash scripts/run_skyrl_ray_head.sh
 
-# 2. CPU: join cluster (swebench env; patches Ray client; SSH tunnels must stay open)
-CONDA_ENV=swebench RAY_ADDRESS=127.0.0.1:6379 bash scripts/run_skyrl_ray_worker.sh
-# Or manually on CPU after: python scripts/patch_ray_tunnel.py && export RAY_PRESERVE_LOCALHOST_IP=1
-
-# 3. GPU: GRPO training (rl1 = lite pool, rl2 = full pool)
-SFT_CHECKPOINT=outputs/sft-gemma4-12b-miniswe-full \
-  SKYRL_HTTP_HOST=<GPU_IP> \
-  SKYRL_REQUIRE_DOCKER_NODE=1 \
+# 2. GPU: GRPO training (starts rollout queue on :9000 by default)
+SFT_CHECKPOINT=outputs/sft-gemma4-12b-miniswe-lora/checkpoint-150 \
+  SKYRL_HTTP_HOST=127.0.0.1 \
   STAGE=rl1 \
   bash scripts/run_rl_skyrl.sh
+
+# 3. CPU: pull workers (no Ray worker / docker_node needed)
+#    SSH tunnels must forward 9000 (queue) and 8001 (vLLM) like existing 6379/8001
+CONDA_ENV=swebench bash scripts/run_rollout_pull_worker.sh
 ```
 
 ## Files

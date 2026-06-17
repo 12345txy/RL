@@ -7,7 +7,7 @@ cd "$ROOT"
 CONDA_ENV="${CONDA_ENV:-RL}"
 STAGE="${STAGE:-rl1}"
 POLICY_MODEL_PATH="${POLICY_MODEL_PATH:-models/gemma-4-12B-it}"
-SFT_CHECKPOINT="${SFT_CHECKPOINT:-outputs/sft-gemma4-12b-miniswe-full}"
+SFT_CHECKPOINT="${SFT_CHECKPOINT:-outputs/sft-gemma4-12b-miniswe-lora/checkpoint-150}"
 OUTPUT_DIR="${OUTPUT_DIR:-outputs/rl-gemma4-12b-miniswe}"
 CKPT_PATH="${CKPT_PATH:-$OUTPUT_DIR/checkpoints}"
 TRAJ_DIR="${TRAJ_DIR:-$OUTPUT_DIR/trajectories}"
@@ -18,6 +18,7 @@ POLICY_GPUS="${POLICY_GPUS:-6}"
 ROLLOUT_GPUS="${ROLLOUT_GPUS:-2}"
 NUM_ENGINES="${NUM_ENGINES:-2}"
 TP_SIZE="${TP_SIZE:-1}"
+VLLM_GPU_MEMORY_UTILIZATION="${VLLM_GPU_MEMORY_UTILIZATION:-0.70}"
 # vLLM "ray" executor spawns EngineCore workers that call ray.init() again; with
 # RAY_TUNNEL_MODE the GCS bootstrap address (container NIC) is unreachable and
 # servers never pass /health. Use "mp" for TP=1 (local GPU workers, no nested Ray).
@@ -31,16 +32,24 @@ if [[ -z "$DISTRIBUTED_EXECUTOR_BACKEND" ]]; then
 fi
 HTTP_HOST="${SKYRL_HTTP_HOST:-127.0.0.1}"
 HTTP_PORT="${SKYRL_HTTP_PORT:-8001}"
+SKYRL_ROLLOUT_MODE="${SKYRL_ROLLOUT_MODE:-pull}"
+SKYRL_ROLLOUT_QUEUE_HOST="${SKYRL_ROLLOUT_QUEUE_HOST:-127.0.0.1}"
+SKYRL_ROLLOUT_QUEUE_PORT="${SKYRL_ROLLOUT_QUEUE_PORT:-9000}"
+SKYRL_ROLLOUT_PULL_WORKERS="${SKYRL_ROLLOUT_PULL_WORKERS:-4}"
+SKYRL_REQUIRE_DOCKER_NODE="${SKYRL_REQUIRE_DOCKER_NODE:-0}"
 SFT_ADAPTER_PATH="${SFT_ADAPTER_PATH:-}"
 LORA_RANK="${LORA_RANK:-0}"
 LORA_ALPHA="${LORA_ALPHA:-128}"
 EPOCHS="${EPOCHS:-}"
 LOGGER="${LOGGER:-swanlab}"
 PROJECT_NAME="${SWANLAB_PROJECT:-swe-rl}"
+SWANLAB_MODE="${SWANLAB_MODE:-local}"
+SWANLAB_LOG_DIR="${SWANLAB_LOG_DIR:-$ROOT/swanlog}"
 RUN_NAME="${SWANLAB_EXPERIMENT_NAME:-}"
 RAY_TUNNEL_MODE="${RAY_TUNNEL_MODE:-1}"
 RAY_TUNNEL_IP="${RAY_TUNNEL_IP:-127.0.0.1}"
-SKYRL_REQUIRE_DOCKER_NODE="${SKYRL_REQUIRE_DOCKER_NODE:-1}"
+# FSDP policy/ref NCCL collective timeout (seconds). Default 300 = 5 minutes.
+SKYRL_WORKER_NCCL_TIMEOUT_IN_S="${SKYRL_WORKER_NCCL_TIMEOUT_IN_S:-300}"
 
 source "/root/miniconda3/etc/profile.d/conda.sh"
 conda activate "$CONDA_ENV"
@@ -49,6 +58,13 @@ export PYTHONPATH="$ROOT:${PYTHONPATH:-}"
 export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
 export NCCL_CUMEM_ENABLE="${NCCL_CUMEM_ENABLE:-0}"
 export SKYRL_REQUIRE_DOCKER_NODE
+export SKYRL_ROLLOUT_MODE SKYRL_ROLLOUT_QUEUE_HOST SKYRL_ROLLOUT_QUEUE_PORT
+export SWANLAB_MODE SWANLAB_LOG_DIR
+export SKYRL_WORKER_NCCL_TIMEOUT_IN_S
+if [[ "$SWANLAB_MODE" == "local" || "$SWANLAB_MODE" == "disabled" ]]; then
+  unset SWANLAB_API_KEY
+  unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY all_proxy
+fi
 if [[ "$RAY_TUNNEL_MODE" == "1" ]]; then
   export RAY_PRESERVE_LOCALHOST_IP=1
   export RAY_ADDRESS="${RAY_ADDRESS:-$RAY_TUNNEL_IP:6379}"
@@ -62,7 +78,7 @@ Usage: bash scripts/run_rl_skyrl.sh
 True SkyRL GRPO training with:
   - FSDP policy update on 6 GPUs
   - vLLM rollout engines on 2 GPUs (NCCL weight sync after each step)
-  - Mini-SWE-Agent Docker rollouts on CPU Ray workers
+  - Mini-SWE-Agent Docker rollouts via pull queue on CPU (default)
 
 Stages:
   rl1  SWE-Gym-Lite parquet, 5 epochs (default)
@@ -71,18 +87,26 @@ Stages:
 Prerequisites:
   bash scripts/setup_skyrl.sh
   bash scripts/run_skyrl_ray_head.sh        # GPU machine
-  bash scripts/run_skyrl_ray_worker.sh      # CPU machine (Docker)
+  bash scripts/run_rollout_pull_worker.sh   # CPU machine (Docker)
 
 Env:
   STAGE=rl1|rl2
+  SKYRL_ROLLOUT_MODE=pull|ray             # default pull (SSH tunnel friendly)
+  SKYRL_ROLLOUT_QUEUE_PORT=9000           # add SSH forward for 9000 like 8001
+  SKYRL_ROLLOUT_PULL_WORKERS=4            # concurrent Docker workers on CPU
+  SKYRL_REQUIRE_DOCKER_NODE=0             # set 1 only for legacy Ray rollout mode
   POLICY_MODEL_PATH=models/gemma-4-12B-it
-  SFT_CHECKPOINT=outputs/sft-gemma4-12b-miniswe-full
+  SFT_CHECKPOINT=outputs/sft-gemma4-12b-miniswe-lora/checkpoint-150
   SFT_ADAPTER_PATH=outputs/.../checkpoint-150   # optional; auto from SFT_CHECKPOINT if LoRA
   LORA_RANK=0|64
   POLICY_GPUS=6  ROLLOUT_GPUS=2  NUM_ENGINES=2
+  VLLM_GPU_MEMORY_UTILIZATION=0.70  # lower if NCCL weight sync OOMs/timeouts
+  SKYRL_WORKER_NCCL_TIMEOUT_IN_S=300  # FSDP NCCL collective timeout (5 minutes)
   DISTRIBUTED_EXECUTOR_BACKEND=mp  # required for RAY_TUNNEL_MODE + TP=1
-  SKYRL_HTTP_HOST=127.0.0.1   # GPU head IP for CPU Ray workers
-  SKYRL_REQUIRE_DOCKER_NODE=1 # schedule rollouts on CPU workers
+  SKYRL_HTTP_HOST=127.0.0.1   # GPU vLLM HTTP for CPU pull workers (tunnel)
+  SKYRL_REQUIRE_DOCKER_NODE=0 # legacy Ray rollout only
+  SWANLAB_MODE=local           # default: local logs only, no cloud upload
+  SWANLAB_LOG_DIR=swanlog
   OUTPUT_DIR=outputs/rl-gemma4-12b-miniswe
 EOF
 }
@@ -166,9 +190,11 @@ echo "==> SkyRL GRPO stage=$STAGE policy=$POLICY_MODEL_PATH train=$TRAIN_PARQUET
 if [[ -n "${SFT_ADAPTER_PATH:-}" ]]; then
   echo "    SFT adapter init: $SFT_ADAPTER_PATH"
 fi
-echo "    placement: ${POLICY_GPUS} policy + ${NUM_ENGINES} vLLM engines (TP=$TP_SIZE, executor=$DISTRIBUTED_EXECUTOR_BACKEND)"
+echo "    placement: ${POLICY_GPUS} policy + ${NUM_ENGINES} vLLM engines (TP=$TP_SIZE, executor=$DISTRIBUTED_EXECUTOR_BACKEND, vllm_mem=$VLLM_GPU_MEMORY_UTILIZATION)"
 echo "    weight sync: NCCL (trainer -> vLLM after each update)"
-echo "    Docker rollouts: SKYRL_REQUIRE_DOCKER_NODE=${SKYRL_REQUIRE_DOCKER_NODE:-0}"
+echo "    Docker rollouts: mode=$SKYRL_ROLLOUT_MODE queue=${SKYRL_ROLLOUT_QUEUE_HOST}:${SKYRL_ROLLOUT_QUEUE_PORT}"
+echo "    swanlab: mode=$SWANLAB_MODE logdir=$SWANLAB_LOG_DIR project=$PROJECT_NAME run=$RUN_NAME"
+echo "    nccl_timeout: ${SKYRL_WORKER_NCCL_TIMEOUT_IN_S}s"
 
 python -m integrations.skyrl_miniswe.main \
   "data.train_data=['$TRAIN_PARQUET']" \
@@ -213,7 +239,7 @@ python -m integrations.skyrl_miniswe.main \
   generator.inference_engine.async_engine=true \
   generator.batched=true \
   generator.n_samples_per_prompt=4 \
-  generator.inference_engine.gpu_memory_utilization=0.85 \
+  generator.inference_engine.gpu_memory_utilization="$VLLM_GPU_MEMORY_UTILIZATION" \
   "trainer.logger=$LOGGER" \
   "trainer.project_name=$PROJECT_NAME" \
   "trainer.run_name=$RUN_NAME" \
