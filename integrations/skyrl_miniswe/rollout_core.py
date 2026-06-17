@@ -15,21 +15,6 @@ from integrations.skyrl_miniswe.mini_swe_utils import evaluate_trajectory, get_s
 from integrations.skyrl_miniswe.types import TrajectoryID, TrainingPhase
 
 
-class DefaultAgentWithReminder(DefaultAgent):
-    def get_observation(self, response: dict) -> dict:
-        output = self.execute_action(self.parse_action(response))
-        observation = self.render_template(self.config.action_observation_template, output=output)
-        remaining = self.config.step_limit - self.model.n_calls
-        if remaining == 1:
-            observation = (
-                f"{observation}\nREMINDER: You only have 1 turn left. Please provide the final answer"
-            )
-        elif remaining > 1:
-            observation = f"{observation}\nREMINDER: You have {remaining} turns left to arrive at the solution."
-        self.add_message("user", observation)
-        return output
-
-
 def resolve_docker_executable(sweagent_config: dict) -> None:
     """Ensure mini-swe-agent uses an absolute docker path (workers often lack PATH)."""
     env_cfg = sweagent_config.setdefault("environment", {})
@@ -50,6 +35,16 @@ def resolve_docker_executable(sweagent_config: dict) -> None:
             return
 
 
+def _model_config(sweagent_config: dict) -> dict:
+    model_cfg = sweagent_config.get("model")
+    if not isinstance(model_cfg, dict):
+        model_cfg = {}
+        sweagent_config["model"] = model_cfg
+    model_cfg.setdefault("cost_tracking", os.environ.get("MSWEA_COST_TRACKING", "ignore_errors"))
+    model_cfg.setdefault("model_kwargs", {})
+    return model_cfg
+
+
 def init_and_run(
     instance: dict,
     litellm_model_name: str,
@@ -64,22 +59,29 @@ def init_and_run(
     from loguru import logger
 
     resolve_docker_executable(sweagent_config)
-    model_config = sweagent_config.get("model", {})
-    model_config.setdefault("model_kwargs", {}).update(sampling_params)
+    model_config = _model_config(sweagent_config)
+    if isinstance(sampling_params, dict):
+        model_config["model_kwargs"].update(sampling_params)
     model = get_model(litellm_model_name, model_config)
 
     agent = None
     extra_info = None
-    result = None
+    eval_result = None
     reward = 0
     error = None
+    exit_status = "Unknown"
+    model_patch = ""
     try:
         env = get_sb_environment(sweagent_config, instance, data_source)
-        agent = DefaultAgentWithReminder(model, env, **sweagent_config.get("agent", {}))
-        exit_status, result = agent.run(instance["problem_statement"])
+        agent = DefaultAgent(model, env, **sweagent_config.get("agent", {}))
+        run_extra = agent.run(instance["problem_statement"])
+        if not isinstance(run_extra, dict):
+            raise TypeError(f"agent.run() returned {type(run_extra).__name__}, expected dict")
+        exit_status = str(run_extra.get("exit_status", "Unknown"))
+        model_patch = str(run_extra.get("submission", "") or "")
     except Exception as e:
         logger.error(f"Error processing instance {instance['instance_id']}: {e}", exc_info=True)
-        exit_status, result = type(e).__name__, str(e)
+        exit_status = type(e).__name__
         error = str(e)
         extra_info = {"traceback": traceback.format_exc()}
     finally:
@@ -89,20 +91,21 @@ def init_and_run(
         path = traj_root / filename
         if agent is not None:
             eval_error = None
-            try:
-                result = evaluate_trajectory(instance, result, sweagent_config, data_source)
-                reward = int(result["resolved"])
-                eval_error = result["eval_error"]
-                if eval_error:
-                    error = eval_error
-            except Exception as e:
-                eval_error = str(e)
-                error = str(e)
+            if model_patch.strip():
+                try:
+                    eval_result = evaluate_trajectory(instance, model_patch, sweagent_config, data_source)
+                    reward = int(eval_result["resolved"])
+                    eval_error = eval_result["eval_error"]
+                    if eval_error:
+                        error = eval_error
+                except Exception as e:
+                    eval_error = str(e)
+                    error = str(e)
             save_traj(
                 agent,
                 path,
                 exit_status=exit_status,
-                result=result,
+                result=eval_result if eval_result is not None else model_patch,
                 extra_info=extra_info,
                 reward=reward,
                 eval_error=eval_error,

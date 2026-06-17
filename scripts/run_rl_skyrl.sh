@@ -50,6 +50,10 @@ RAY_TUNNEL_MODE="${RAY_TUNNEL_MODE:-1}"
 RAY_TUNNEL_IP="${RAY_TUNNEL_IP:-127.0.0.1}"
 # FSDP policy/ref NCCL collective timeout (seconds). Default 300 = 5 minutes.
 SKYRL_WORKER_NCCL_TIMEOUT_IN_S="${SKYRL_WORKER_NCCL_TIMEOUT_IN_S:-300}"
+# Mini-SWE pull workers call a stable OpenAI-compatible endpoint on SKYRL_HTTP_PORT
+# (default 8001). SkyRL's new inference path binds the router to a random port instead,
+# so disable it unless you also retarget CPU OPENAI_BASE_URL to that proxy URL.
+SKYRL_USE_NEW_INFERENCE="${SKYRL_USE_NEW_INFERENCE:-0}"
 
 source "/root/miniconda3/etc/profile.d/conda.sh"
 conda activate "$CONDA_ENV"
@@ -59,6 +63,7 @@ export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
 export NCCL_CUMEM_ENABLE="${NCCL_CUMEM_ENABLE:-0}"
 export SKYRL_REQUIRE_DOCKER_NODE
 export SKYRL_ROLLOUT_MODE SKYRL_ROLLOUT_QUEUE_HOST SKYRL_ROLLOUT_QUEUE_PORT
+export _SKYRL_USE_NEW_INFERENCE="$SKYRL_USE_NEW_INFERENCE"
 export SWANLAB_MODE SWANLAB_LOG_DIR
 export SKYRL_WORKER_NCCL_TIMEOUT_IN_S
 if [[ "$SWANLAB_MODE" == "local" || "$SWANLAB_MODE" == "disabled" ]]; then
@@ -101,10 +106,12 @@ Env:
   LORA_RANK=0|64
   POLICY_GPUS=6  ROLLOUT_GPUS=2  NUM_ENGINES=2
   VLLM_GPU_MEMORY_UTILIZATION=0.70  # lower if NCCL weight sync OOMs/timeouts
+  VLLM_ENABLE_AUTO_TOOL_CHOICE=true  # required for mini-swe-agent tool_choice=auto
+  VLLM_TOOL_CALL_PARSER=gemma4       # Gemma4 unified tool calling parser
   SKYRL_WORKER_NCCL_TIMEOUT_IN_S=300  # FSDP NCCL collective timeout (5 minutes)
   DISTRIBUTED_EXECUTOR_BACKEND=mp  # required for RAY_TUNNEL_MODE + TP=1
   SKYRL_HTTP_HOST=127.0.0.1   # GPU vLLM HTTP for CPU pull workers (tunnel)
-  SKYRL_REQUIRE_DOCKER_NODE=0 # legacy Ray rollout only
+  SKYRL_USE_NEW_INFERENCE=0   # required for stable :8001 OpenAI endpoint (pull rollout)
   SWANLAB_MODE=local           # default: local logs only, no cloud upload
   SWANLAB_LOG_DIR=swanlog
   OUTPUT_DIR=outputs/rl-gemma4-12b-miniswe
@@ -128,14 +135,18 @@ if [[ -d "$SFT_CHECKPOINT" && -f "$SFT_CHECKPOINT/config.json" ]]; then
 elif [[ -d "$SFT_CHECKPOINT" && -f "$SFT_CHECKPOINT/adapter_config.json" ]]; then
   SFT_ADAPTER_PATH="${SFT_ADAPTER_PATH:-$SFT_CHECKPOINT}"
   if [[ "$LORA_RANK" -le 0 ]]; then
-    LORA_RANK="$(python - <<'PY' "$SFT_ADAPTER_PATH"
+    read -r LORA_RANK LORA_ALPHA < <(python - <<'PY' "$SFT_ADAPTER_PATH"
 import json, sys
 cfg = json.load(open(f"{sys.argv[1]}/adapter_config.json"))
-print(cfg.get("r", 64))
+print(cfg.get("r", 64), cfg.get("lora_alpha", 128))
 PY
-)"
+)
   fi
-  echo "==> Loading SFT LoRA adapter: $SFT_ADAPTER_PATH (rank=$LORA_RANK) on base $POLICY_MODEL_PATH"
+  echo "==> Loading SFT LoRA adapter: $SFT_ADAPTER_PATH (rank=$LORA_RANK alpha=$LORA_ALPHA) on base $POLICY_MODEL_PATH"
+elif [[ "$SFT_CHECKPOINT" == outputs/sft-gemma4-12b-miniswe-lora/checkpoint-150 ]]; then
+  echo "ERROR: default SFT LoRA checkpoint not found: $SFT_CHECKPOINT" >&2
+  echo "       Train from base model only, or set SFT_CHECKPOINT to a valid adapter dir." >&2
+  exit 1
 fi
 
 if [[ -n "$SFT_ADAPTER_PATH" ]]; then
@@ -186,13 +197,27 @@ if [[ "$LORA_RANK" -gt 0 ]]; then
   fi
 fi
 
+# mini-swe-agent uses OpenAI tool_choice=auto; Gemma4 requires vLLM tool-call parser.
+VLLM_ENABLE_AUTO_TOOL_CHOICE="${VLLM_ENABLE_AUTO_TOOL_CHOICE:-true}"
+VLLM_TOOL_CALL_PARSER="${VLLM_TOOL_CALL_PARSER:-gemma4}"
+EXTRA_ARGS+=(
+  "generator.inference_engine.engine_init_kwargs.enable_auto_tool_choice=$VLLM_ENABLE_AUTO_TOOL_CHOICE"
+  "generator.inference_engine.engine_init_kwargs.tool_call_parser=$VLLM_TOOL_CALL_PARSER"
+)
+
 echo "==> SkyRL GRPO stage=$STAGE policy=$POLICY_MODEL_PATH train=$TRAIN_PARQUET"
+if [[ "$LORA_RANK" -gt 0 ]]; then
+  echo "    policy LoRA: rank=$LORA_RANK alpha=$LORA_ALPHA adapter=${SFT_ADAPTER_PATH:-<random init>}"
+  echo "    (ref LoRA in SkyRL logs may show rank=0; ref inherits policy adapter at runtime)"
+fi
 if [[ -n "${SFT_ADAPTER_PATH:-}" ]]; then
   echo "    SFT adapter init: $SFT_ADAPTER_PATH"
 fi
 echo "    placement: ${POLICY_GPUS} policy + ${NUM_ENGINES} vLLM engines (TP=$TP_SIZE, executor=$DISTRIBUTED_EXECUTOR_BACKEND, vllm_mem=$VLLM_GPU_MEMORY_UTILIZATION)"
 echo "    weight sync: NCCL (trainer -> vLLM after each update)"
 echo "    Docker rollouts: mode=$SKYRL_ROLLOUT_MODE queue=${SKYRL_ROLLOUT_QUEUE_HOST}:${SKYRL_ROLLOUT_QUEUE_PORT}"
+echo "    vLLM HTTP for CPU: http://${HTTP_HOST}:${HTTP_PORT}/v1 (_SKYRL_USE_NEW_INFERENCE=$SKYRL_USE_NEW_INFERENCE)"
+echo "    vLLM tools: enable_auto_tool_choice=$VLLM_ENABLE_AUTO_TOOL_CHOICE parser=$VLLM_TOOL_CALL_PARSER"
 echo "    swanlab: mode=$SWANLAB_MODE logdir=$SWANLAB_LOG_DIR project=$PROJECT_NAME run=$RUN_NAME"
 echo "    nccl_timeout: ${SKYRL_WORKER_NCCL_TIMEOUT_IN_S}s"
 

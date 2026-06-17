@@ -16,6 +16,7 @@ export PYTHONPATH="$ROOT:${PYTHONPATH:-}"
 export SKYRL_ROLLOUT_QUEUE_URL="$QUEUE_URL"
 export OPENAI_API_KEY="${OPENAI_API_KEY:-dummy}"
 export OPENAI_BASE_URL="$VLLM_BASE"
+export MSWEA_COST_TRACKING="${MSWEA_COST_TRACKING:-ignore_errors}"
 
 usage() {
   cat <<'EOF'
@@ -35,6 +36,7 @@ Env:
   SKYRL_ROLLOUT_PULL_WORKERS=4
   OPENAI_BASE_URL=http://127.0.0.1:8001/v1   # SkyRL vLLM via SSH tunnel
   SKYRL_ROLLOUT_DEQUEUE_TIMEOUT_S=30
+  MSWEA_COST_TRACKING=ignore_errors   # local vLLM model not in LiteLLM price table
 EOF
 }
 

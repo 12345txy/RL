@@ -17,6 +17,24 @@ from skyrl.train.generators.base import BatchMetadata, GeneratorInput, Generator
 from skyrl.train.generators.skyrl_gym_generator import SkyRLGymGenerator
 from skyrl.train.generators.utils import get_response_ids_and_loss_mask_from_messages, get_rollout_metrics
 
+# mini-swe-agent v2 adds internal `exit` messages; SkyRL only tokenizes user/assistant/tool.
+_TRAINABLE_ROLES = frozenset({"user", "assistant", "tool"})
+
+
+def _training_messages(messages: list[dict]) -> list[dict]:
+    return [m for m in messages if m.get("role") in _TRAINABLE_ROLES]
+
+
+def _response_messages_for_training(messages: list[dict]) -> list[dict]:
+    """Keep system/user prefix intact; drop mini-swe internal roles from the rollout tail."""
+    if len(messages) <= 2:
+        return _training_messages(messages)
+    head = messages[:2]
+    tail = _training_messages(messages[2:])
+    while tail and tail[-1]["role"] == "user":
+        tail.pop()
+    return head + tail
+
 
 @dataclass
 class MiniSWEGeneratorConfig(GeneratorConfig):
@@ -71,23 +89,25 @@ class MiniSweAgentGenerator(SkyRLGymGenerator):
         if not messages:
             return None, None, None, None, None, None
 
-        response_messages = messages[2:]
-        for message in messages[:2]:
+        train_messages = _response_messages_for_training(messages)
+        if len(train_messages) < 3:
+            raise ValueError(
+                "Rollout produced no trainable assistant turns after filtering mini-swe exit messages."
+            )
+
+        response_messages = train_messages[2:]
+        for message in train_messages[:2]:
             assert message["role"] in ("system", "user")
 
         initial_input_ids = self.tokenizer.apply_chat_template(
-            messages[:2], add_generation_prompt=False, return_dict=False, tokenize=True
+            train_messages[:2], add_generation_prompt=False, return_dict=False, tokenize=True
         )
         initial_prompt_length = len(initial_input_ids)
 
-        last_idx = len(response_messages) - 1
-        while response_messages[last_idx]["role"] == "user":
-            last_idx -= 1
-        if last_idx < 0:
+        if not any(m["role"] == "assistant" for m in response_messages):
             raise ValueError(
                 "Found no assistant messages. Ensure Mini-SWE-Agent can reach the SkyRL vLLM HTTP endpoint."
             )
-        response_messages = response_messages[: last_idx + 1]
 
         response_ids, loss_mask, _ = get_response_ids_and_loss_mask_from_messages(
             response_messages,
