@@ -66,6 +66,7 @@ export SKYRL_ROLLOUT_MODE SKYRL_ROLLOUT_QUEUE_HOST SKYRL_ROLLOUT_QUEUE_PORT
 export _SKYRL_USE_NEW_INFERENCE="$SKYRL_USE_NEW_INFERENCE"
 export SWANLAB_MODE SWANLAB_LOG_DIR
 export SKYRL_WORKER_NCCL_TIMEOUT_IN_S
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 if [[ "$SWANLAB_MODE" == "local" || "$SWANLAB_MODE" == "disabled" ]]; then
   unset SWANLAB_API_KEY
   unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY all_proxy
@@ -109,7 +110,7 @@ Env:
   VLLM_ENABLE_AUTO_TOOL_CHOICE=true  # required for mini-swe-agent tool_choice=auto
   VLLM_TOOL_CALL_PARSER=gemma4       # Gemma4 unified tool calling parser
   SKYRL_WORKER_NCCL_TIMEOUT_IN_S=300  # FSDP NCCL collective timeout (5 minutes)
-  DISTRIBUTED_EXECUTOR_BACKEND=mp  # required for RAY_TUNNEL_MODE + TP=1
+  MAX_TRAIN_SEQ_LEN=18432             # policy backward cap; do NOT set 0
   SKYRL_HTTP_HOST=127.0.0.1   # GPU vLLM HTTP for CPU pull workers (tunnel)
   SKYRL_USE_NEW_INFERENCE=0   # required for stable :8001 OpenAI endpoint (pull rollout)
   SWANLAB_MODE=local           # default: local logs only, no cloud upload
@@ -168,6 +169,12 @@ if [[ "$STAGE" == "rl1" ]]; then
   LITE_FLAG=(--lite_only)
   EPOCHS_DEFAULT=5
 fi
+MAX_TRAIN_SEQ_LEN="${MAX_TRAIN_SEQ_LEN:-18432}"
+if [[ "$MAX_TRAIN_SEQ_LEN" -le 0 ]]; then
+  echo "ERROR: MAX_TRAIN_SEQ_LEN must be > 0 for Gemma4-12B policy backward (got $MAX_TRAIN_SEQ_LEN)." >&2
+  echo "       Unbounded SWE trajectories OOM ~80GB GPUs. Try 18432 (default), 16384, or 14336 if OOM." >&2
+  exit 1
+fi
 EPOCHS="${EPOCHS:-$EPOCHS_DEFAULT}"
 
 if [[ ! -f "$TRAIN_PARQUET" ]]; then
@@ -219,7 +226,7 @@ echo "    Docker rollouts: mode=$SKYRL_ROLLOUT_MODE queue=${SKYRL_ROLLOUT_QUEUE_
 echo "    vLLM HTTP for CPU: http://${HTTP_HOST}:${HTTP_PORT}/v1 (_SKYRL_USE_NEW_INFERENCE=$SKYRL_USE_NEW_INFERENCE)"
 echo "    vLLM tools: enable_auto_tool_choice=$VLLM_ENABLE_AUTO_TOOL_CHOICE parser=$VLLM_TOOL_CALL_PARSER"
 echo "    swanlab: mode=$SWANLAB_MODE logdir=$SWANLAB_LOG_DIR project=$PROJECT_NAME run=$RUN_NAME"
-echo "    nccl_timeout: ${SKYRL_WORKER_NCCL_TIMEOUT_IN_S}s"
+echo "    train seq cap: max_train_seq_len=$MAX_TRAIN_SEQ_LEN (text-only Gemma4; must be > 0)"
 
 python -m integrations.skyrl_miniswe.main \
   "data.train_data=['$TRAIN_PARQUET']" \
@@ -237,17 +244,23 @@ python -m integrations.skyrl_miniswe.main \
   trainer.eval_before_train=false \
   trainer.eval_interval=5 \
   trainer.update_epochs_per_batch=1 \
-  trainer.train_batch_size=8 \
-  trainer.policy_mini_batch_size=8 \
+  trainer.train_batch_size=6 \
+  trainer.policy_mini_batch_size=3 \
+  trainer.max_tokens_per_microbatch=18432 \
   trainer.micro_forward_batch_size_per_gpu=1 \
+  trainer.policy.language_model_only=true \
+  trainer.ref.language_model_only=true \
+  generator.inference_engine.language_model_only=true \
   trainer.micro_train_batch_size_per_gpu=1 \
   trainer.dump_data_batch=true \
   trainer.ckpt_interval=5 \
   trainer.max_prompt_length=4096 \
+  trainer.algorithm.max_seq_len="$MAX_TRAIN_SEQ_LEN" \
   trainer.flash_attn=false \
   trainer.remove_microbatch_padding=false \
   generator.sampling_params.max_generate_length=4096 \
   generator.max_input_length=28672 \
+  generator.max_train_seq_len="$MAX_TRAIN_SEQ_LEN" \
   generator.max_turns=20 \
   trainer.policy.optimizer_config.lr=5.0e-7 \
   trainer.algorithm.use_kl_loss=true \

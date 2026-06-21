@@ -13,6 +13,7 @@ NUM_INSTANCES="${NUM_INSTANCES:-1}"
 TP="${TENSOR_PARALLEL_SIZE:-1}"
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-131072}"
 GPU_MEM="${GPU_MEMORY_UTILIZATION:-0.90}"
+MAX_LORA_RANK="${MAX_LORA_RANK:-}"
 # SWE-bench is text-only; skip image/audio profiling for 12B Unified.
 LIMIT_MM_PER_PROMPT="${LIMIT_MM_PER_PROMPT:-{\"image\": 0, \"audio\": 0}}"
 LOG_DIR="${LOG_DIR:-results/vllm_gemma4_12b}"
@@ -131,10 +132,19 @@ fi
 vllm_extra_args() {
   VLLM_EXTRA_ARGS=()
   if [[ -n "$LORA_PATH" && -d "$LORA_PATH" ]]; then
-    local lora_name
+    local lora_name lora_rank
     lora_name="$(basename "$LORA_PATH")"
-    VLLM_EXTRA_ARGS+=(--enable-lora --lora-modules "${lora_name}=${LORA_PATH}")
-    echo "    lora=${lora_name} path=${LORA_PATH}" >&2
+    lora_rank="$MAX_LORA_RANK"
+    if [[ -z "$lora_rank" && -f "$LORA_PATH/adapter_config.json" ]]; then
+      lora_rank="$(python3 - <<PY
+import json
+print(json.load(open("$LORA_PATH/adapter_config.json")).get("r", 64))
+PY
+)"
+    fi
+    lora_rank="${lora_rank:-64}"
+    VLLM_EXTRA_ARGS+=(--enable-lora --max-lora-rank "$lora_rank" --lora-modules "${lora_name}=${LORA_PATH}")
+    echo "    lora=${lora_name} path=${LORA_PATH} max_lora_rank=${lora_rank}" >&2
   elif [[ -n "$CHECKPOINT" && -d "$CHECKPOINT" && -f "$CHECKPOINT/config.json" ]]; then
     MODEL_PATH="$CHECKPOINT"
     echo "    checkpoint weights=${CHECKPOINT}" >&2

@@ -26,9 +26,10 @@ Pull Mini-SWE Docker rollouts from the GPU rollout queue (no Ray worker needed).
 
 Prerequisites on this CPU machine:
   - Docker installed (docker ps)
-  - SSH tunnel to GPU rollout queue + vLLM (same as before):
-      LocalForward/RemoteForward 9000 and 8001 through your SSH config
-  - GPU training running (starts queue on http://127.0.0.1:9000 inside GPU container)
+  - SSH: 本机同时 ssh work.bj11 + ssh cpu-mechine-1
+      work.bj11 LocalForward: 6379,8265,8001,9000
+      cpu-mechine-1 RemoteForward: 6379,8001,9000
+  - GPU training running (queue http://127.0.0.1:9000, vLLM http://127.0.0.1:8001)
 
 Env:
   CONDA_ENV=swebench

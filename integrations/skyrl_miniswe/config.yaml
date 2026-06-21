@@ -3,15 +3,18 @@
 # Install:    bash scripts/setup_skyrl.sh
 
 trainer:
-  algorithm: grpo
   strategy: fsdp
-  train_batch_size: 8
-  policy_mini_batch_size: 8
+  # Must be a multiple of lcm(dp_size, n_samples_per_prompt) / gcd(...).
+  # With 6 policy+ref GPUs and n_samples_per_prompt=4, stride=3 so 8 prompts are trimmed to 6.
+  train_batch_size: 6
+  policy_mini_batch_size: 3
+  max_tokens_per_microbatch: 18432
   micro_train_batch_size_per_gpu: 1
   micro_forward_batch_size_per_gpu: 1
   epochs: 5          # rl1; use 20 for rl2
   update_epochs_per_batch: 1
   algorithm:
+    advantage_estimator: grpo
     use_kl_loss: true
     kl_loss_coef: 0.005
   policy:
