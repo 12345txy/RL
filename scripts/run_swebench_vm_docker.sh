@@ -32,7 +32,7 @@ Env:
   VLLM_BASE=https://sv-1de238dd-3e5f-4057-96ff-e7820166f5d1-8000-x-defau-c9b4bcae2d.sproxy.bj-14.alayanew.com:22443/v1
   MODEL=hosted_vllm/Qwen3.6-27B
   REDO_EXISTING=1          overwrite existing trajectories
-  MSWEA_MODEL_RETRY_STOP_AFTER_ATTEMPT=3   LLM retries on timeout (default 3)
+  MSWEA_MODEL_RETRY_STOP_AFTER_ATTEMPT=2   LLM retries on timeout (2 attempts = 1 retry)
   CONDA_ENV=swebench
 
 Example:
@@ -72,7 +72,7 @@ if ! curl -sf "${VLLM_BASE%/}/models" >/dev/null 2>&1; then
 fi
 
 export MSWEA_COST_TRACKING="${MSWEA_COST_TRACKING:-ignore_errors}"
-export MSWEA_MODEL_RETRY_STOP_AFTER_ATTEMPT="${MSWEA_MODEL_RETRY_STOP_AFTER_ATTEMPT:-3}"
+export MSWEA_MODEL_RETRY_STOP_AFTER_ATTEMPT="${MSWEA_MODEL_RETRY_STOP_AFTER_ATTEMPT:-2}"
 
 mkdir -p "$OUTPUT_DIR"
 

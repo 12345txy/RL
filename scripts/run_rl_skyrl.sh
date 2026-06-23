@@ -7,7 +7,8 @@ cd "$ROOT"
 CONDA_ENV="${CONDA_ENV:-RL}"
 STAGE="${STAGE:-rl1}"
 POLICY_MODEL_PATH="${POLICY_MODEL_PATH:-models/gemma-4-12B-it}"
-SFT_CHECKPOINT="${SFT_CHECKPOINT:-outputs/sft-gemma4-12b-miniswe-lora/checkpoint-150}"
+# Use "-" not ":-" so `SFT_CHECKPOINT=` (empty) means base-only RL, not the default adapter.
+SFT_CHECKPOINT="${SFT_CHECKPOINT-outputs/sft-gemma4-12b-miniswe-lora/checkpoint-150}"
 OUTPUT_DIR="${OUTPUT_DIR:-outputs/rl-gemma4-12b-miniswe}"
 CKPT_PATH="${CKPT_PATH:-$OUTPUT_DIR/checkpoints}"
 TRAJ_DIR="${TRAJ_DIR:-$OUTPUT_DIR/trajectories}"
@@ -103,6 +104,7 @@ Env:
   SKYRL_REQUIRE_DOCKER_NODE=0             # set 1 only for legacy Ray rollout mode
   POLICY_MODEL_PATH=models/gemma-4-12B-it
   SFT_CHECKPOINT=outputs/sft-gemma4-12b-miniswe-lora/checkpoint-150
+  SFT_CHECKPOINT=                         # empty = base-only RL (no SFT adapter)
   SFT_ADAPTER_PATH=outputs/.../checkpoint-150   # optional; auto from SFT_CHECKPOINT if LoRA
   LORA_RANK=0|64
   POLICY_GPUS=6  ROLLOUT_GPUS=2  NUM_ENGINES=2
@@ -131,7 +133,9 @@ fi
 
 LORA_RANK="${LORA_RANK:-0}"
 
-if [[ -d "$SFT_CHECKPOINT" && -f "$SFT_CHECKPOINT/config.json" ]]; then
+if [[ -z "$SFT_CHECKPOINT" ]]; then
+  echo "==> No SFT checkpoint (base-model RL, LORA_RANK=$LORA_RANK)"
+elif [[ -d "$SFT_CHECKPOINT" && -f "$SFT_CHECKPOINT/config.json" ]]; then
   POLICY_MODEL_PATH="$SFT_CHECKPOINT"
 elif [[ -d "$SFT_CHECKPOINT" && -f "$SFT_CHECKPOINT/adapter_config.json" ]]; then
   SFT_ADAPTER_PATH="${SFT_ADAPTER_PATH:-$SFT_CHECKPOINT}"
@@ -202,6 +206,11 @@ if [[ "$LORA_RANK" -gt 0 ]]; then
   if [[ -n "$SFT_ADAPTER_PATH" ]]; then
     EXTRA_ARGS+=("trainer.policy.model.lora.adapter_path=$SFT_ADAPTER_PATH")
   fi
+else
+  EXTRA_ARGS+=(
+    "trainer.policy.model.lora.rank=0"
+    "trainer.ref.model.lora.rank=0"
+  )
 fi
 
 # mini-swe-agent uses OpenAI tool_choice=auto; Gemma4 requires vLLM tool-call parser.

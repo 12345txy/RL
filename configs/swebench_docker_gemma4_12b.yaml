@@ -12,6 +12,7 @@ environment:
     PIP_PROGRESS_BAR: "off"
     TQDM_DISABLE: "1"
   container_timeout: "4h"
+  pull_timeout: 300  # docker run 总超时（含 pull），5 分钟
 
 agent:
   step_limit: 250
@@ -23,4 +24,4 @@ model:
     api_base: "https://sv-1de238dd-3e5f-4057-96ff-e7820166f5d1-8000-x-defau-c9b4bcae2d.sproxy.bj-14.alayanew.com:22443/v1"
     drop_params: true
     temperature: 0.2
-    timeout: 600
+    timeout: 480  # LLM 单次请求超时 8 分钟

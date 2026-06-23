@@ -73,7 +73,7 @@ Env:
   RUN_HARNESS=1            Run scripts/eval_swebench_local.sh after agent
   RUN_ID=sft-ckpt150-eval30-seed42
   REDO_EXISTING=1
-  CONDA_ENV=swebench
+  MSWEA_MODEL_RETRY_STOP_AFTER_ATTEMPT=2   LLM: 8min timeout, 1 retry (see CONFIG)
 EOF
 }
 
@@ -139,7 +139,7 @@ if ! curl -sf "${VLLM_BASE%/}/models" >/dev/null 2>&1; then
 fi
 
 export MSWEA_COST_TRACKING="${MSWEA_COST_TRACKING:-ignore_errors}"
-export MSWEA_MODEL_RETRY_STOP_AFTER_ATTEMPT="${MSWEA_MODEL_RETRY_STOP_AFTER_ATTEMPT:-3}"
+export MSWEA_MODEL_RETRY_STOP_AFTER_ATTEMPT="${MSWEA_MODEL_RETRY_STOP_AFTER_ATTEMPT:-2}"
 
 mkdir -p "$OUTPUT_DIR"
 
