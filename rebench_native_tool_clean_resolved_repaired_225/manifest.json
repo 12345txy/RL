@@ -1,0 +1,29 @@
+{
+  "name": "rebench_native_tool_clean_resolved_repaired_225",
+  "created_at": "2026-06-29T07:25:13.789413+00:00",
+  "source": "/home/jovyan/zhaoguangxiang-data-zzzc/agent_sft/artifacts/datasets/training_exports/qwen_native_tool_msa_dsv4pro_swerebench_swev_20260615/resolved/records.jsonl",
+  "dataset": "swe-rebench-v2",
+  "teacher": "deepseek/deepseek-v4-pro",
+  "scaffold": "mini-swe-agent-native-tool",
+  "format": "openai_native_tool_messages_msa_dsv4pro_v1_repaired",
+  "selection": "resolved=true; SWE-ReBench only; SWE-Bench Verified excluded",
+  "repair_policy": "Remove only unexecuted assistant turns rejected for zero/multiple bash calls and their immediately following harness error prompts.",
+  "stats": {
+    "rows": 225,
+    "already_clean": 162,
+    "repaired": 63,
+    "repair_pairs_removed": 63,
+    "repairs_per_record": {
+      "0": 162,
+      "1": 63
+    },
+    "unique_instance_ids": 225,
+    "swe_bench_verified_rows": 0,
+    "validation_errors": 0
+  },
+  "outputs": {
+    "records_jsonl": "/home/jovyan/zhaoguangxiang-data/tanxinyu/rebench_native_tool_clean_resolved_repaired_225/records.jsonl",
+    "train_jsonl": "/home/jovyan/zhaoguangxiang-data/tanxinyu/rebench_native_tool_clean_resolved_repaired_225/train.jsonl",
+    "repair_audit_jsonl": "/home/jovyan/zhaoguangxiang-data/tanxinyu/rebench_native_tool_clean_resolved_repaired_225/repair_audit.jsonl"
+  }
+}

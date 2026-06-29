@@ -62,7 +62,8 @@ Legacy pseudo-RL: `bash scripts/run_rl_legacy.sh`
 
 | Path | Description |
 |------|-------------|
-| `data/sft/sft_merged.jsonl` | Merged SFT |
+| `data/sft/rebench_native_train.jsonl` | SWE-ReBench native-tool SFT (primary) |
+| `data/sft/sft_merged.jsonl` | Merged SFT (default train entry) |
 | `data/rl/swegym_rl_train.jsonl` | Legacy RL pool (jsonl) |
 | `data/rl/skyrl_parquet/train.parquet` | SkyRL full train set |
 | `data/rl/skyrl_parquet/train_lite.parquet` | SkyRL lite (rl1) |

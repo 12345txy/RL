@@ -143,7 +143,7 @@ export MSWEA_MODEL_RETRY_STOP_AFTER_ATTEMPT="${MSWEA_MODEL_RETRY_STOP_AFTER_ATTE
 
 mkdir -p "$OUTPUT_DIR"
 
-echo "==> SWE-bench Verified eval (SFT checkpoint-150, n=30)"
+echo "==> SWE-bench Verified eval (SFT checkpoint-150, n=30, sticky routing)"
 echo "    split=$SPLIT_FILE"
 echo "    model=$MODEL vllm=$VLLM_BASE workers=$WORKERS"
 echo "    output=$OUTPUT_DIR"
@@ -153,7 +153,7 @@ if [[ "$REDO_EXISTING" == "1" ]]; then
   REDO_ARG=(--redo-existing)
 fi
 
-mini-extra swebench \
+PYTHONPATH="$ROOT" python -m integrations.miniswe.run_swebench \
   -c swebench \
   -c "$CONFIG" \
   -c "model.model_kwargs.api_base=${VLLM_BASE}" \

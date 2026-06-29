@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Merge SWE-smith + SWE-Gym SFT JSONL with stratified shuffle."""
+"""Merge SFT JSONL sources with stratified shuffle."""
 
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    rows = []
+    rows: list = []
     for path in args.inputs:
         part = load_jsonl(path)
         print(f"    {path}: {len(part)} rows")
@@ -41,22 +41,8 @@ def main() -> None:
     merged: list = []
     gym = by_source.get("swegym_openhands", [])
     smith = by_source.get("swesmith", [])
-    miniswe = [
-        r
-        for src, items in by_source.items()
-        if src.startswith("miniswe") or src == "miniswe"
-        for r in items
-    ]
-    other = [
-        r
-        for src, items in by_source.items()
-        if src not in {"swegym_openhands", "swesmith"} and not src.startswith("miniswe") and src != "miniswe"
-        for r in items
-    ]
 
-    if miniswe and not smith and not gym:
-        merged.extend(miniswe)
-    elif smith and gym:
+    if smith and gym:
         target_total = len(smith) + len(gym)
         target_gym = max(len(gym), int(target_total * args.gym_weight))
         if len(gym) < target_gym:
@@ -64,10 +50,12 @@ def main() -> None:
             gym = gym + extra
         merged.extend(smith)
         merged.extend(gym[:target_gym])
+        for src, items in by_source.items():
+            if src not in {"swesmith", "swegym_openhands"}:
+                merged.extend(items)
     else:
-        merged.extend(smith or gym or other)
+        merged = list(rows)
 
-    merged.extend(other)
     rng.shuffle(merged)
 
     save_jsonl(args.output, merged)

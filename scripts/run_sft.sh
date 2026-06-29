@@ -14,7 +14,7 @@ export SWANLAB_PROJECT="${SWANLAB_PROJECT:-swe-rl}"
 export SWANLAB_MODE="${SWANLAB_MODE:-local}"
 NO_SWANLAB="${NO_SWANLAB:-0}"
 SWANLAB_EXPERIMENT_NAME="${SWANLAB_EXPERIMENT_NAME:-}"
-SWANLAB_DESCRIPTION="${SWANLAB_DESCRIPTION:-Gemma4-12B mini-swe-agent SFT}"
+SWANLAB_DESCRIPTION="${SWANLAB_DESCRIPTION:-Gemma4-12B native-tool SWE SFT (SWE-ReBench)}"
 LOSS_TYPE="${LOSS_TYPE:-chunked_nll}"
 LOGGING_STEPS="${LOGGING_STEPS:-1}"
 SAVE_STEPS="${SAVE_STEPS:-50}"
@@ -23,12 +23,13 @@ RESUME_FROM_CHECKPOINT="${RESUME_FROM_CHECKPOINT:-}"
 
 MODEL_PATH="${MODEL_PATH:-models/gemma-4-12B-it}"
 TRAIN_PATH="${TRAIN_PATH:-data/sft/sft_merged.jsonl}"
-OUTPUT_DIR="${OUTPUT_DIR:-outputs/sft-gemma4-12b-miniswe}"
+OUTPUT_DIR="${OUTPUT_DIR:-outputs/sft-gemma4-12b-rebench-native}"
 STAGE="${STAGE:-lora}"
 SKIP_DATA="${SKIP_DATA:-0}"
 SKIP_SEQ_ANALYSIS="${SKIP_SEQ_ANALYSIS:-0}"
-MAX_SEQ_CAP="${MAX_SEQ_CAP:-28672}"
+MAX_SEQ_CAP="${MAX_SEQ_CAP:-40960}"
 MAX_SEQ_LENGTH="${MAX_SEQ_LENGTH:-}"
+TRUNCATION_POLICY="${TRUNCATION_POLICY:-chunk}"
 SEQ_STATS_PATH="${SEQ_STATS_PATH:-data/sft/seq_length_stats.json}"
 DEEPSPEED_ZERO_STAGE="${DEEPSPEED_ZERO_STAGE:-3}"
 GRADIENT_CHECKPOINTING="${GRADIENT_CHECKPOINTING:-1}"
@@ -52,17 +53,19 @@ usage() {
   cat <<'EOF'
 Usage: bash scripts/run_sft.sh
 
-Phase 2: two-stage SFT (LoRA debug -> full) on mini-swe-agent trajectories.
+Phase 2: two-stage SFT (LoRA debug -> full) on native-tool SWE trajectories.
 
 Env:
   STAGE=lora|full
   MODEL_PATH=models/gemma-4-12B-it
   TRAIN_PATH=data/sft/sft_merged.jsonl
-  OUTPUT_DIR=outputs/sft-gemma4-12b-miniswe
+  SFT_NUM_EPOCHS=                 Override default epochs (LoRA default: 4 for small native sets)
+  OUTPUT_DIR=outputs/sft-gemma4-12b-rebench-native
   SKIP_DATA=1
   SKIP_SEQ_ANALYSIS=1
-  MAX_SEQ_LENGTH=28672
-  MAX_SEQ_CAP=28672
+  MAX_SEQ_LENGTH=40960
+  MAX_SEQ_CAP=40960
+  TRUNCATION_POLICY=chunk|smart_tail|none
   PREPROCESS_CACHE_DIR=data/sft/preprocessed
   USE_PREPROCESSED=1
   FORCE_PREPROCESS=0
@@ -99,14 +102,17 @@ fi
 
 EXTRA_ARGS=()
 OUT="$OUTPUT_DIR"
+SFT_NUM_EPOCHS="${SFT_NUM_EPOCHS:-}"
 case "$STAGE" in
   lora)
     OUT="${OUTPUT_DIR}-lora"
-    EXTRA_ARGS+=(--lora_r 64 --lora_alpha 128 --learning_rate 2e-5 --num_train_epochs 2)
+    LORA_EPOCHS="${SFT_NUM_EPOCHS:-4}"
+    EXTRA_ARGS+=(--lora_r 64 --lora_alpha 128 --learning_rate 2e-5 --num_train_epochs "$LORA_EPOCHS")
     ;;
   full)
     OUT="${OUTPUT_DIR}-full"
-    EXTRA_ARGS+=(--full_finetune --learning_rate 1e-5 --num_train_epochs 1)
+    FULL_EPOCHS="${SFT_NUM_EPOCHS:-2}"
+    EXTRA_ARGS+=(--full_finetune --learning_rate 1e-5 --num_train_epochs "$FULL_EPOCHS")
     ;;
   *)
     echo "Unknown STAGE=$STAGE (use lora or full)" >&2
@@ -134,7 +140,9 @@ if [[ -z "$MAX_SEQ_LENGTH" ]]; then
       --model_path "$MODEL_PATH" \
       --train_path "$TRAIN_PATH" \
       --output_path "$SEQ_STATS_PATH" \
-      --max_cap "$MAX_SEQ_CAP"
+      --max_cap "$MAX_SEQ_CAP" \
+      --truncation_policy "$TRUNCATION_POLICY" \
+      --context_limit "$MAX_SEQ_CAP"
   fi
   if [[ ! -f "$SEQ_STATS_PATH" ]]; then
     echo "ERROR: missing $SEQ_STATS_PATH; run analyze_sft_seq_lengths.py or set MAX_SEQ_LENGTH" >&2
@@ -185,13 +193,14 @@ if [[ -n "$RESUME_FROM_CHECKPOINT" && "$RESUME_FROM_CHECKPOINT" != "0" ]]; then
   fi
 fi
 
-echo "==> SFT stage=$STAGE output=$OUT max_seq_length=$MAX_SEQ_LENGTH deepspeed_zero=$DEEPSPEED_ZERO_STAGE grad_ckpt=$GRADIENT_CHECKPOINTING save_steps=$SAVE_STEPS logging_steps=$LOGGING_STEPS ddp_timeout=${DDP_TIMEOUT}s resume=$RESUME_LABEL preprocess_cache=$PREPROCESS_CACHE_DIR use_preprocessed=$USE_PREPROCESSED swanlab=$([[ "$NO_SWANLAB" == "1" ]] && echo off || echo on) project=$SWANLAB_PROJECT run=$SWANLAB_EXPERIMENT_NAME"
+echo "==> SFT stage=$STAGE output=$OUT max_seq_length=$MAX_SEQ_LENGTH truncation_policy=$TRUNCATION_POLICY deepspeed_zero=$DEEPSPEED_ZERO_STAGE grad_ckpt=$GRADIENT_CHECKPOINTING save_steps=$SAVE_STEPS logging_steps=$LOGGING_STEPS ddp_timeout=${DDP_TIMEOUT}s resume=$RESUME_LABEL preprocess_cache=$PREPROCESS_CACHE_DIR use_preprocessed=$USE_PREPROCESSED swanlab=$([[ "$NO_SWANLAB" == "1" ]] && echo off || echo on) project=$SWANLAB_PROJECT run=$SWANLAB_EXPERIMENT_NAME"
 
 accelerate launch --config_file "$ACCEL_CONFIG" scripts/train_sft.py \
   --model_path "$MODEL_PATH" \
   --train_path "$TRAIN_PATH" \
   --output_dir "$OUT" \
   --max_seq_length "$MAX_SEQ_LENGTH" \
+  --truncation_policy "$TRUNCATION_POLICY" \
   --preprocess_cache_dir "$PREPROCESS_CACHE_DIR" \
   --preprocess_num_proc "$PREPROCESS_NUM_PROC" \
   "${PREPROCESS_ARGS[@]}" \

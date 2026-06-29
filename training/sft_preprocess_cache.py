@@ -11,9 +11,14 @@ from typing import Any
 
 from datasets import Dataset, load_from_disk
 
-from data.swe_utils import load_jsonl, prepare_gemma4_chat_messages
+from data.swe_utils import (
+    expand_sft_rows_for_context_limit,
+    load_jsonl,
+    prepare_gemma4_chat_messages,
+    truncate_token_ids,
+)
 
-CACHE_VERSION = 1
+CACHE_VERSION = 2
 READY_MARKER = ".ready"
 MANIFEST_NAME = "manifest.json"
 DATASET_DIR_NAME = "dataset"
@@ -30,12 +35,13 @@ def cache_fingerprint(
     model_path: str,
     max_seq_length: int,
     max_samples: int | None,
+    truncation_policy: str,
 ) -> str:
     train_path = Path(train_path)
     fp = _train_path_fingerprint(train_path)
     payload = (
         f"v{CACHE_VERSION}|{train_path.resolve()}|{fp['mtime_ns']}|{fp['size']}|"
-        f"{model_path}|{max_seq_length}|{max_samples or ''}"
+        f"{model_path}|{max_seq_length}|{max_samples or ''}|{truncation_policy}"
     )
     return hashlib.sha256(payload.encode()).hexdigest()[:16]
 
@@ -64,6 +70,8 @@ def build_manifest(
     max_samples: int | None,
     num_samples: int,
     tokenizer_eos_token: str | None,
+    truncation_policy: str,
+    expansion_stats: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     train_path = Path(train_path)
     manifest = {
@@ -74,6 +82,8 @@ def build_manifest(
         "max_samples": max_samples,
         "num_samples": num_samples,
         "tokenizer_eos_token": tokenizer_eos_token,
+        "truncation_policy": truncation_policy,
+        "expansion_stats": expansion_stats or {},
     }
     manifest.update(_train_path_fingerprint(train_path))
     return manifest
@@ -86,6 +96,7 @@ def manifest_matches(
     model_path: str,
     max_seq_length: int,
     max_samples: int | None,
+    truncation_policy: str,
 ) -> bool:
     train_path = Path(train_path)
     expected = build_manifest(
@@ -95,8 +106,17 @@ def manifest_matches(
         max_samples=max_samples,
         num_samples=manifest.get("num_samples", -1),
         tokenizer_eos_token=manifest.get("tokenizer_eos_token"),
+        truncation_policy=truncation_policy,
     )
-    keys = ("version", "mtime_ns", "size", "model_path", "max_seq_length", "max_samples")
+    keys = (
+        "version",
+        "mtime_ns",
+        "size",
+        "model_path",
+        "max_seq_length",
+        "max_samples",
+        "truncation_policy",
+    )
     return all(manifest.get(k) == expected.get(k) for k in keys)
 
 
@@ -115,6 +135,7 @@ def should_use_cache(
     model_path: str,
     max_seq_length: int,
     max_samples: int | None,
+    truncation_policy: str,
     use_preprocessed: bool,
     force_preprocess: bool,
 ) -> bool:
@@ -131,28 +152,38 @@ def should_use_cache(
         model_path=model_path,
         max_seq_length=max_seq_length,
         max_samples=max_samples,
+        truncation_policy=truncation_policy,
     )
 
 
-def _format_and_tokenize_row(row: dict[str, Any], tokenizer) -> dict[str, list[int]]:
+def _format_and_tokenize_row(
+    row: dict[str, Any],
+    tokenizer,
+    *,
+    max_seq_length: int,
+) -> dict[str, list[int]]:
     messages = prepare_gemma4_chat_messages(row["messages"])
     text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
     eos = tokenizer.eos_token
     if eos and not text.endswith(eos):
         text = text + eos
-    return {"input_ids": tokenizer(text)["input_ids"]}
+    input_ids = tokenizer(text)["input_ids"]
+    if len(input_ids) > max_seq_length:
+        input_ids = truncate_token_ids(input_ids, max_seq_length, mode="keep_end")
+    return {"input_ids": input_ids}
 
 
 def build_tokenized_dataset(
     rows: list[dict[str, Any]],
     tokenizer,
     *,
+    max_seq_length: int,
     num_proc: int = 1,
 ) -> Dataset:
     dataset = Dataset.from_list(rows)
 
     def _map_fn(example: dict[str, Any]) -> dict[str, list[int]]:
-        return _format_and_tokenize_row(example, tokenizer)
+        return _format_and_tokenize_row(example, tokenizer, max_seq_length=max_seq_length)
 
     map_kwargs: dict[str, Any] = {"remove_columns": dataset.column_names}
     if num_proc > 1:
@@ -219,6 +250,7 @@ def prepare_sft_dataset(
     use_preprocessed: bool,
     force_preprocess: bool,
     preprocess_num_proc: int,
+    truncation_policy: str,
     is_main_process: bool,
 ) -> tuple[Dataset, Path, bool]:
     """Return (dataset, cache_dir, loaded_from_cache)."""
@@ -233,6 +265,7 @@ def prepare_sft_dataset(
         model_path=model_path,
         max_seq_length=max_seq_length,
         max_samples=max_samples,
+        truncation_policy=truncation_policy,
     )
     cache_dir = resolve_cache_dir(cache_base_dir, fingerprint)
 
@@ -242,6 +275,7 @@ def prepare_sft_dataset(
         model_path=model_path,
         max_seq_length=max_seq_length,
         max_samples=max_samples,
+        truncation_policy=truncation_policy,
         use_preprocessed=use_preprocessed,
         force_preprocess=force_preprocess,
     ):
@@ -255,17 +289,34 @@ def prepare_sft_dataset(
         _ready_path(cache_dir).unlink()
 
     if is_main_process:
-        print(f"==> Building preprocessed SFT cache: {cache_dir}")
-        print(f"    samples={len(rows)} num_proc={preprocess_num_proc}")
+        print(
+            f"==> Building preprocessed SFT cache: {cache_dir} "
+            f"(policy={truncation_policy}, max_seq_length={max_seq_length})"
+        )
+        print(f"    input_rows={len(rows)} num_proc={preprocess_num_proc}")
         t0 = time.time()
-        dataset = build_tokenized_dataset(rows, tokenizer, num_proc=preprocess_num_proc)
+        rows, expansion_stats = expand_sft_rows_for_context_limit(
+            rows,
+            tokenizer,
+            max_tokens=max_seq_length,
+            policy=truncation_policy,
+        )
+        print(f"    expanded_rows={expansion_stats['output_rows']} stats={expansion_stats}")
+        dataset = build_tokenized_dataset(
+            rows,
+            tokenizer,
+            max_seq_length=max_seq_length,
+            num_proc=preprocess_num_proc,
+        )
         manifest = build_manifest(
             train_path=train_path,
             model_path=model_path,
             max_seq_length=max_seq_length,
             max_samples=max_samples,
-            num_samples=len(rows),
+            num_samples=len(dataset),
             tokenizer_eos_token=tokenizer.eos_token,
+            truncation_policy=truncation_policy,
+            expansion_stats=expansion_stats,
         )
         save_preprocessed_cache(dataset, cache_dir, manifest)
         print(f"    saved in {time.time() - t0:.1f}s")

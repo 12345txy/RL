@@ -76,7 +76,7 @@ export MSWEA_MODEL_RETRY_STOP_AFTER_ATTEMPT="${MSWEA_MODEL_RETRY_STOP_AFTER_ATTE
 
 mkdir -p "$OUTPUT_DIR"
 
-echo "==> SWE-bench (VM Docker + vLLM)"
+echo "==> SWE-bench (VM Docker + vLLM, sticky nginx routing via X-SWE-Instance-Id)"
 echo "    subset=$SUBSET split=$SPLIT slice=$SLICE workers=$WORKERS"
 echo "    model=$MODEL vllm=$VLLM_BASE output=$OUTPUT_DIR"
 echo "    llm_retry_attempts=$MSWEA_MODEL_RETRY_STOP_AFTER_ATTEMPT"
@@ -86,7 +86,7 @@ if [[ "$REDO_EXISTING" == "1" ]]; then
   REDO_ARG=(--redo-existing)
 fi
 
-mini-extra swebench \
+PYTHONPATH="$ROOT" python -m integrations.miniswe.run_swebench \
   -c swebench \
   -c "$CONFIG" \
   -c "model.model_kwargs.api_base=${VLLM_BASE}" \

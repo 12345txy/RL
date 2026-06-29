@@ -103,7 +103,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model_path", default="models/gemma-4-12B-it")
     parser.add_argument("--train_path", default="data/sft/sft_merged.jsonl")
     parser.add_argument("--output_dir", default="outputs/sft-gemma4-12b-miniswe")
-    parser.add_argument("--max_seq_length", type=int, default=28672)
+    parser.add_argument("--max_seq_length", type=int, default=40960)
     parser.add_argument("--num_train_epochs", type=int, default=2)
     parser.add_argument("--per_device_train_batch_size", type=int, default=1)
     parser.add_argument("--gradient_accumulation_steps", type=int, default=8)
@@ -137,6 +137,13 @@ def parse_args() -> argparse.Namespace:
         default="chunked_nll",
         choices=("nll", "chunked_nll", "dft"),
         help="chunked_nll avoids materializing full vocab logits (required for 32k ctx)",
+    )
+    parser.add_argument(
+        "--truncation_policy",
+        type=str,
+        default="chunk",
+        choices=("none", "smart_tail", "chunk"),
+        help="Agent-aware context limiting before tokenization (default: chunk by turns)",
     )
     parser.add_argument(
         "--preprocess_cache_dir",
@@ -215,6 +222,7 @@ def main() -> None:
         use_preprocessed=args.use_preprocessed,
         force_preprocess=args.force_preprocess,
         preprocess_num_proc=args.preprocess_num_proc,
+        truncation_policy=args.truncation_policy,
         is_main_process=_is_rank0(),
     )
     num_samples = len(dataset)
@@ -223,7 +231,8 @@ def main() -> None:
         print(f"==> SFT dataset: {num_samples} rows from {args.train_path}")
         print(
             f"    cache={cache_dir} from_disk={from_cache} "
-            f"world_size={_world_size()} full_finetune={args.full_finetune} loss_type={args.loss_type}"
+            f"world_size={_world_size()} full_finetune={args.full_finetune} "
+            f"loss_type={args.loss_type} truncation_policy={args.truncation_policy}"
         )
 
     if args.preprocess_only:
@@ -245,6 +254,11 @@ def main() -> None:
     else:
         model = args.model_path
 
+    global_batch = args.per_device_train_batch_size * _world_size() * args.gradient_accumulation_steps
+    steps_per_epoch = max(1, math.ceil(num_samples / global_batch))
+    total_steps = steps_per_epoch * args.num_train_epochs
+    warmup_steps = max(1, int(total_steps * 0.03))
+
     training_args = SFTConfig(
         output_dir=args.output_dir,
         num_train_epochs=args.num_train_epochs,
@@ -260,7 +274,7 @@ def main() -> None:
         save_total_limit=3,
         gradient_checkpointing=args.gradient_checkpointing,
         gradient_checkpointing_kwargs={"use_reentrant": False},
-        warmup_ratio=0.03,
+        warmup_steps=warmup_steps,
         lr_scheduler_type="cosine",
         max_grad_norm=1.0,
         logging_first_step=True,
