@@ -6,7 +6,7 @@ NGINX_URL="${NGINX_URL:-http://127.0.0.1:8001}"
 INSTANCE_ID="${INSTANCE_ID:-django__django-sticky-probe}"
 
 pick_backend() {
-  curl -sI "${NGINX_URL%/}/v1/models" -H "X-SWE-Instance-Id: $1" \
+  curl -sD - -o /dev/null "${NGINX_URL%/}/v1/models" -H "X-SWE-Instance-Id: $1" \
     | awk -F': ' 'tolower($1)=="x-vllm-backend" {print $2}' | tr -d '\r'
 }
 
